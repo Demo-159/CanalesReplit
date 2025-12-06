@@ -23,8 +23,8 @@ FROM node:20-alpine AS production
 
 WORKDIR /app
 
-# Install ffmpeg and other runtime dependencies
-RUN apk add --no-cache ffmpeg
+# Install ffmpeg, postgresql-client for pg_isready, and netcat for connectivity checks
+RUN apk add --no-cache ffmpeg postgresql-client netcat-openbsd
 
 # Copy package files
 COPY package*.json ./
@@ -54,7 +54,7 @@ ENV PORT=8000
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:8000/api/health || exit 1
 
 # Start the application with entrypoint

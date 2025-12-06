@@ -10,14 +10,20 @@
 La forma más sencilla de ejecutar la aplicación localmente con todos los servicios:
 
 ```bash
-# Inicia la aplicación y base de datos
-docker-compose up -d
+# Reconstruir e iniciar (importante después de actualizaciones)
+docker-compose up -d --build
 
 # Ver logs
 docker-compose logs -f
 
+# Ver solo logs de la app
+docker-compose logs -f app
+
 # Detener
 docker-compose down
+
+# Limpiar todo (incluyendo datos)
+docker-compose down -v
 ```
 
 La aplicación estará disponible en `http://localhost:8000`
@@ -94,6 +100,7 @@ El `docker-compose.yml` incluye PostgreSQL preconfigurado:
 - Usuario: `streaming`
 - Password: `streaming_password`
 - Base de datos: `streaming_db`
+- URL: `postgresql://streaming:streaming_password@postgres:5432/streaming_db`
 
 ## Recursos Recomendados
 
@@ -127,31 +134,39 @@ curl https://tu-app.koyeb.app/api/stats
 ## Solución de Problemas
 
 ### Error: relation "channels" does not exist
-Las migraciones no se ejecutaron. Esto se soluciona automáticamente al reiniciar el contenedor. Si persiste:
+Las migraciones no se ejecutaron correctamente. Reconstruye la imagen:
 ```bash
-# Con docker-compose
 docker-compose down
-docker-compose up -d
-
-# Manual
-docker exec -it <container_id> npx drizzle-kit push --force
+docker-compose up -d --build
 ```
 
+### Error: DATABASE_URL not set
+Verifica que la variable está correctamente configurada en docker-compose.yml o en tu comando docker run.
+
 ### Error: ffmpeg not found
-Asegúrate de que la imagen Docker se construyó correctamente con ffmpeg instalado.
+Asegúrate de que la imagen Docker se construyó correctamente con ffmpeg instalado:
+```bash
+docker-compose build --no-cache
+```
 
 ### Error: ECONNREFUSED database
 - Verifica que `DATABASE_URL` es correcta
-- Comprueba que la base de datos es accesible desde el contenedor
-- Para docker-compose, espera a que PostgreSQL esté completamente iniciado
+- Para docker-compose, asegúrate de usar `postgres` como host (no `localhost`)
+- Espera a que PostgreSQL esté completamente iniciado
 
 ### Streams no funcionan
 1. Verifica que las URLs de videos son accesibles públicamente
-2. Revisa los logs: `docker-compose logs app`
+2. Revisa los logs: `docker-compose logs -f app`
 3. El endpoint `/api/channels/:id/status` muestra errores específicos
 
 ### Container se reinicia constantemente
 Revisa los logs para ver el error:
 ```bash
-docker-compose logs --tail=50 app
+docker-compose logs --tail=100 app
+```
+
+### Actualizar después de cambios en el código
+```bash
+docker-compose down
+docker-compose up -d --build
 ```
