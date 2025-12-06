@@ -3,7 +3,20 @@ import * as fs from "fs";
 import * as path from "path";
 import type { Channel, StreamingConfig } from "@shared/schema";
 
-const STREAMS_DIR = path.join(process.cwd(), "streams");
+// Use /app/streams in production (Docker), otherwise use relative path
+const STREAMS_DIR = process.env.NODE_ENV === "production" 
+  ? "/app/streams" 
+  : path.join(process.cwd(), "streams");
+
+// Ensure base streams directory exists at startup
+try {
+  if (!fs.existsSync(STREAMS_DIR)) {
+    fs.mkdirSync(STREAMS_DIR, { recursive: true, mode: 0o755 });
+    console.log(`Created streams directory: ${STREAMS_DIR}`);
+  }
+} catch (err) {
+  console.error(`Error creating streams directory: ${err}`);
+}
 
 interface StreamState {
   process: ChildProcess | null;
@@ -153,8 +166,9 @@ async function playNextVideo(state: StreamState): Promise<void> {
   });
 
   ffmpeg.on("error", (err) => {
-    console.error(`[Stream ${state.channelId}] FFmpeg error: ${err.message}`);
-    state.lastError = err.message;
+    console.error(`[Stream ${state.channelId}] FFmpeg spawn error: ${err.message}`);
+    console.error(`[Stream ${state.channelId}] This usually means ffmpeg is not installed or not in PATH`);
+    state.lastError = `FFmpeg error: ${err.message}. Make sure ffmpeg is installed.`;
     
     // Try to continue with next video after a delay
     if (state.shouldRestart) {
