@@ -1,18 +1,42 @@
-import { sql } from "drizzle-orm";
-import { pgTable, text, varchar } from "drizzle-orm/pg-core";
-import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-export const users = pgTable("users", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  username: text("username").notNull().unique(),
-  password: text("password").notNull(),
+// Video in a playlist
+export interface Video {
+  id: string;
+  url: string;
+  title: string;
+  duration: number; // in seconds
+  order: number;
+}
+
+export const insertVideoSchema = z.object({
+  url: z.string().url("URL inválida"),
+  title: z.string().min(1, "El título es requerido"),
+  duration: z.number().optional().default(0),
 });
 
-export const insertUserSchema = createInsertSchema(users).pick({
-  username: true,
-  password: true,
+export type InsertVideo = z.infer<typeof insertVideoSchema>;
+
+// Channel
+export interface Channel {
+  id: string;
+  name: string;
+  description: string;
+  status: "idle" | "live" | "error";
+  videos: Video[];
+  createdAt: string;
+}
+
+export const insertChannelSchema = z.object({
+  name: z.string().min(1, "El nombre es requerido").max(50, "Máximo 50 caracteres"),
+  description: z.string().max(200, "Máximo 200 caracteres").optional().default(""),
 });
 
-export type InsertUser = z.infer<typeof insertUserSchema>;
-export type User = typeof users.$inferSelect;
+export type InsertChannel = z.infer<typeof insertChannelSchema>;
+
+// Stats
+export interface ChannelStats {
+  totalChannels: number;
+  activeStreams: number;
+  totalVideos: number;
+}
