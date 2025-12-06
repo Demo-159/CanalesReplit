@@ -333,7 +333,6 @@ export async function registerRoutes(
       const xml = generateChannelEPG(channel, baseUrl);
       
       res.setHeader("Content-Type", "application/xml");
-      res.setHeader("Content-Disposition", `attachment; filename="${channel.name.replace(/[^a-z0-9]/gi, '_')}_epg.xml"`);
       res.send(xml);
     } catch (error) {
       console.error("Error generating EPG:", error);
@@ -349,7 +348,6 @@ export async function registerRoutes(
       const xml = generateFullEPG(channels, baseUrl);
       
       res.setHeader("Content-Type", "application/xml");
-      res.setHeader("Content-Disposition", 'attachment; filename="epg.xml"');
       res.send(xml);
     } catch (error) {
       console.error("Error generating EPG:", error);

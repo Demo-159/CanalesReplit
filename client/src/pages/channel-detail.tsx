@@ -1,13 +1,14 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Plus, Play, Pause, Clock, Film, Download } from "lucide-react";
+import { ArrowLeft, Plus, Play, Pause, Clock, Film, Copy, Check, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PlaylistItem } from "@/components/playlist-item";
 import { AddVideoDialog } from "@/components/add-video-dialog";
 import { M3u8Display } from "@/components/m3u8-display";
+import { EpgUrlDisplay } from "@/components/epg-url-display";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Channel, InsertVideo } from "@shared/schema";
@@ -275,25 +276,7 @@ export default function ChannelDetail() {
 
         <div className="space-y-4">
           <M3u8Display channel={channel} />
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">EPG (Guía de Programación)</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <p className="text-sm text-muted-foreground">
-                Descarga el archivo XML de la guía de programación compatible con reproductores IPTV.
-              </p>
-              <Button
-                variant="outline"
-                className="w-full"
-                onClick={() => window.open(`/api/channels/${id}/epg.xml`, "_blank")}
-                data-testid="button-download-epg"
-              >
-                <Download className="h-4 w-4 mr-2" />
-                Descargar EPG XML
-              </Button>
-            </CardContent>
-          </Card>
+          <EpgUrlDisplay channelId={id || ""} />
         </div>
       </div>
 
