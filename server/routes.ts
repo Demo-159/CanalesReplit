@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertChannelSchema, insertVideoSchema, type Channel } from "@shared/schema";
+import { insertChannelSchema, insertVideoSchema, streamingConfigSchema, type Channel } from "@shared/schema";
 import { startStream, stopStream, getStreamPath } from "./streaming";
 import express from "express";
 import * as path from "path";
@@ -181,6 +181,25 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error updating channel:", error);
       res.status(500).json({ error: "Failed to update channel" });
+    }
+  });
+
+  // Update streaming config
+  app.patch("/api/channels/:id/config", async (req, res) => {
+    try {
+      const parsed = streamingConfigSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.errors });
+      }
+      
+      const channel = await storage.updateStreamingConfig(req.params.id, parsed.data);
+      if (!channel) {
+        return res.status(404).json({ error: "Channel not found" });
+      }
+      res.json(channel);
+    } catch (error) {
+      console.error("Error updating streaming config:", error);
+      res.status(500).json({ error: "Failed to update streaming config" });
     }
   });
 

@@ -1,4 +1,4 @@
-import type { Channel, Video, InsertChannel, InsertVideo, ChannelStats } from "@shared/schema";
+import type { Channel, Video, InsertChannel, InsertVideo, ChannelStats, StreamingConfig, InsertStreamingConfig } from "@shared/schema";
 import { channels, videos } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, asc, count, sql } from "drizzle-orm";
@@ -12,6 +12,7 @@ export interface IStorage {
   updateChannel(id: string, data: InsertChannel): Promise<Channel | undefined>;
   deleteChannel(id: string): Promise<boolean>;
   updateChannelStatus(id: string, status: Channel["status"]): Promise<void>;
+  updateStreamingConfig(id: string, config: InsertStreamingConfig): Promise<Channel | undefined>;
   
   // Videos
   addVideo(channelId: string, data: InsertVideo): Promise<Video | undefined>;
@@ -20,6 +21,30 @@ export interface IStorage {
   
   // Stats
   getStats(): Promise<ChannelStats>;
+}
+
+// Default streaming config
+const defaultStreamingConfig: StreamingConfig = {
+  videoBitrate: 1000,
+  audioBitrate: 128,
+  preset: "veryfast",
+  segmentDuration: 4,
+  playlistSize: 6,
+  transitionDelay: 500,
+  threads: 2,
+};
+
+// Helper to extract streaming config from db row
+function extractStreamingConfig(ch: any): StreamingConfig {
+  return {
+    videoBitrate: ch.videoBitrate ?? defaultStreamingConfig.videoBitrate,
+    audioBitrate: ch.audioBitrate ?? defaultStreamingConfig.audioBitrate,
+    preset: ch.preset ?? defaultStreamingConfig.preset,
+    segmentDuration: ch.segmentDuration ?? defaultStreamingConfig.segmentDuration,
+    playlistSize: ch.playlistSize ?? defaultStreamingConfig.playlistSize,
+    transitionDelay: ch.transitionDelay ?? defaultStreamingConfig.transitionDelay,
+    threads: ch.threads ?? defaultStreamingConfig.threads,
+  };
 }
 
 // DatabaseStorage implementation - javascript_database integration
@@ -46,6 +71,7 @@ export class DatabaseStorage implements IStorage {
           order: v.order,
         })),
         createdAt: ch.createdAt.toISOString(),
+        streamingConfig: extractStreamingConfig(ch),
       });
     }
     
@@ -73,6 +99,7 @@ export class DatabaseStorage implements IStorage {
         order: v.order,
       })),
       createdAt: ch.createdAt.toISOString(),
+      streamingConfig: extractStreamingConfig(ch),
     };
   }
 
@@ -92,6 +119,7 @@ export class DatabaseStorage implements IStorage {
       status: created.status as "idle" | "live" | "error",
       videos: [],
       createdAt: created.createdAt.toISOString(),
+      streamingConfig: extractStreamingConfig(created),
     };
   }
 
@@ -123,6 +151,44 @@ export class DatabaseStorage implements IStorage {
         order: v.order,
       })),
       createdAt: updated.createdAt.toISOString(),
+      streamingConfig: extractStreamingConfig(updated),
+    };
+  }
+
+  async updateStreamingConfig(id: string, config: InsertStreamingConfig): Promise<Channel | undefined> {
+    const [updated] = await db.update(channels)
+      .set({
+        videoBitrate: config.videoBitrate,
+        audioBitrate: config.audioBitrate,
+        preset: config.preset,
+        segmentDuration: config.segmentDuration,
+        playlistSize: config.playlistSize,
+        transitionDelay: config.transitionDelay,
+        threads: config.threads,
+      })
+      .where(eq(channels.id, id))
+      .returning();
+
+    if (!updated) return undefined;
+
+    const channelVideos = await db.select().from(videos)
+      .where(eq(videos.channelId, id))
+      .orderBy(asc(videos.order));
+
+    return {
+      id: updated.id,
+      name: updated.name,
+      description: updated.description || "",
+      status: updated.status as "idle" | "live" | "error",
+      videos: channelVideos.map(v => ({
+        id: v.id,
+        url: v.url,
+        title: v.title,
+        duration: v.duration,
+        order: v.order,
+      })),
+      createdAt: updated.createdAt.toISOString(),
+      streamingConfig: extractStreamingConfig(updated),
     };
   }
 

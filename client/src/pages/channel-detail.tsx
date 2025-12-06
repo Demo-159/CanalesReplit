@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Plus, Play, Pause, Clock, Film, Copy, Check, FileText } from "lucide-react";
+import { ArrowLeft, Plus, Play, Pause, Clock, Film, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -9,6 +9,7 @@ import { PlaylistItem } from "@/components/playlist-item";
 import { AddVideoDialog } from "@/components/add-video-dialog";
 import { M3u8Display } from "@/components/m3u8-display";
 import { EpgUrlDisplay } from "@/components/epg-url-display";
+import { StreamingConfigDialog } from "@/components/streaming-config-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Channel, InsertVideo } from "@shared/schema";
@@ -44,6 +45,7 @@ export default function ChannelDetail() {
   const { toast } = useToast();
   const [addVideoOpen, setAddVideoOpen] = useState(false);
   const [deleteVideoId, setDeleteVideoId] = useState<string | null>(null);
+  const [configOpen, setConfigOpen] = useState(false);
 
   const { data: channel, isLoading, error } = useQuery<Channel>({
     queryKey: ["/api/channels", id],
@@ -182,6 +184,14 @@ export default function ChannelDetail() {
           )}
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => setConfigOpen(true)}
+            data-testid="button-open-config"
+          >
+            <Settings className="h-4 w-4" />
+          </Button>
           {channel.status === "live" ? (
             <Button
               variant="secondary"
@@ -307,6 +317,13 @@ export default function ChannelDetail() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <StreamingConfigDialog
+        open={configOpen}
+        onOpenChange={setConfigOpen}
+        channelId={id || ""}
+        currentConfig={channel.streamingConfig}
+      />
     </div>
   );
 }

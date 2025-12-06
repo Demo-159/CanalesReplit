@@ -1,7 +1,7 @@
 import { spawn, ChildProcess } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import type { Channel } from "@shared/schema";
+import type { Channel, StreamingConfig } from "@shared/schema";
 
 const STREAMS_DIR = path.join(process.cwd(), "streams");
 
@@ -13,6 +13,7 @@ interface StreamState {
   segmentCounter: number;
   shouldRestart: boolean;
   lastError: string | null;
+  config: StreamingConfig;
 }
 
 // Active streaming states
@@ -72,38 +73,46 @@ function startFFmpegProcess(
   channelId: string,
   videoUrl: string,
   channelDir: string,
-  startNumber: number
+  startNumber: number,
+  config: StreamingConfig
 ): ChildProcess {
   const playlistPath = path.join(channelDir, "playlist.m3u8");
+  
+  // Calculate GOP size based on segment duration (assuming 30fps)
+  const gopSize = config.segmentDuration * 30;
   
   // FFmpeg arguments for HLS output with segment continuation
   const ffmpegArgs = [
     "-hide_banner",
     "-loglevel", "error",
+    "-threads", config.threads.toString(),
+    "-thread_queue_size", "2048",
     "-re", // Real-time read
     "-i", videoUrl,
     "-c:v", "libx264",
-    "-preset", "ultrafast",
+    "-preset", config.preset,
     "-tune", "zerolatency",
     "-profile:v", "baseline",
     "-level", "3.0",
     "-pix_fmt", "yuv420p",
-    "-g", "30",
+    "-g", gopSize.toString(),
+    "-keyint_min", gopSize.toString(),
     "-sc_threshold", "0",
-    "-b:v", "1500k",
-    "-maxrate", "1500k",
-    "-bufsize", "3000k",
+    "-b:v", `${config.videoBitrate}k`,
+    "-maxrate", `${config.videoBitrate}k`,
+    "-bufsize", `${config.videoBitrate * 2}k`,
     "-c:a", "aac",
     "-ar", "44100",
-    "-b:a", "128k",
+    "-b:a", `${config.audioBitrate}k`,
     "-ac", "2",
     "-f", "hls",
-    "-hls_time", "4",
-    "-hls_list_size", "10",
+    "-hls_time", config.segmentDuration.toString(),
+    "-hls_list_size", config.playlistSize.toString(),
+    "-hls_delete_threshold", "2",
     "-start_number", startNumber.toString(),
     "-hls_flags", startNumber > 0 
-      ? "append_list+delete_segments+omit_endlist" 
-      : "delete_segments+omit_endlist",
+      ? "append_list+delete_segments+omit_endlist+independent_segments" 
+      : "delete_segments+omit_endlist+independent_segments",
     "-hls_segment_filename", path.join(channelDir, "segment_%d.ts"),
     playlistPath,
   ];
@@ -128,7 +137,7 @@ async function playNextVideo(state: StreamState): Promise<void> {
   const videoUrl = state.videoUrls[state.currentVideoIndex];
   console.log(`[Stream ${state.channelId}] Playing video ${state.currentVideoIndex + 1}/${state.videoUrls.length} starting at segment ${startNumber}: ${videoUrl}`);
   
-  const ffmpeg = startFFmpegProcess(state.channelId, videoUrl, channelDir, startNumber);
+  const ffmpeg = startFFmpegProcess(state.channelId, videoUrl, channelDir, startNumber, state.config);
   state.process = ffmpeg;
   state.lastError = null;
 
@@ -166,8 +175,8 @@ async function playNextVideo(state: StreamState): Promise<void> {
     // Move to next video (loop back to start if at end)
     state.currentVideoIndex = (state.currentVideoIndex + 1) % state.videoUrls.length;
     
-    // Brief delay before starting next video (HLS clients have buffer)
-    setTimeout(() => playNextVideo(state), 100);
+    // Use configured transition delay before starting next video
+    setTimeout(() => playNextVideo(state), state.config.transitionDelay);
   });
 
   // Update activeStreams with new process
@@ -193,7 +202,7 @@ export async function startStream(channel: Channel): Promise<boolean> {
   console.log(`[Stream ${channel.id}] Starting with ${videoUrls.length} video(s)`);
 
   try {
-    // Create initial state
+    // Create initial state with streaming config
     const state: StreamState = {
       process: null,
       channelId: channel.id,
@@ -202,6 +211,7 @@ export async function startStream(channel: Channel): Promise<boolean> {
       segmentCounter: 0,
       shouldRestart: true,
       lastError: null,
+      config: channel.streamingConfig,
     };
 
     activeStreams.set(channel.id, state);

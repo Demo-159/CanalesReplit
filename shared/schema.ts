@@ -10,6 +10,13 @@ export const channels = pgTable("channels", {
   description: text("description").default(""),
   status: varchar("status", { length: 10 }).notNull().default("idle"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  videoBitrate: integer("video_bitrate").default(1000),
+  audioBitrate: integer("audio_bitrate").default(128),
+  preset: varchar("preset", { length: 20 }).default("veryfast"),
+  segmentDuration: integer("segment_duration").default(4),
+  playlistSize: integer("playlist_size").default(6),
+  transitionDelay: integer("transition_delay").default(500),
+  threads: integer("threads").default(2),
 });
 
 export const videos = pgTable("videos", {
@@ -53,6 +60,17 @@ export const insertVideoSchema = z.object({
 
 export type InsertVideo = z.infer<typeof insertVideoSchema>;
 
+// Streaming configuration interface
+export interface StreamingConfig {
+  videoBitrate: number;
+  audioBitrate: number;
+  preset: string;
+  segmentDuration: number;
+  playlistSize: number;
+  transitionDelay: number;
+  threads: number;
+}
+
 // Channel interface for API responses
 export interface Channel {
   id: string;
@@ -61,12 +79,25 @@ export interface Channel {
   status: "idle" | "live" | "error";
   videos: Video[];
   createdAt: string;
+  streamingConfig: StreamingConfig;
 }
 
 export const insertChannelSchema = z.object({
   name: z.string().min(1, "El nombre es requerido").max(50, "Máximo 50 caracteres"),
   description: z.string().max(200, "Máximo 200 caracteres").optional().default(""),
 });
+
+export const streamingConfigSchema = z.object({
+  videoBitrate: z.number().min(200).max(8000).default(1000),
+  audioBitrate: z.number().min(32).max(320).default(128),
+  preset: z.enum(["ultrafast", "superfast", "veryfast", "faster", "fast"]).default("veryfast"),
+  segmentDuration: z.number().min(1).max(10).default(4),
+  playlistSize: z.number().min(3).max(20).default(6),
+  transitionDelay: z.number().min(100).max(5000).default(500),
+  threads: z.number().min(1).max(8).default(2),
+});
+
+export type InsertStreamingConfig = z.infer<typeof streamingConfigSchema>;
 
 export type InsertChannel = z.infer<typeof insertChannelSchema>;
 
