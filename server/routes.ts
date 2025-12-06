@@ -113,6 +113,20 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   
+  // Health check endpoint for Docker/Koyeb
+  app.get("/api/health", async (_req, res) => {
+    try {
+      res.json({ 
+        status: "ok", 
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+      });
+    } catch (error) {
+      res.status(500).json({ status: "error", message: "Health check failed" });
+    }
+  });
+
   // Get stats
   app.get("/api/stats", async (_req, res) => {
     try {

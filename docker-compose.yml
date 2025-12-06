@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - NODE_ENV=production
+      - PORT=8000
+      - DATABASE_URL=${DATABASE_URL}
+    volumes:
+      - streams_data:/app/streams
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=streaming
+      - POSTGRES_PASSWORD=streaming_password
+      - POSTGRES_DB=streaming_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+volumes:
+  streams_data:
+  postgres_data:
