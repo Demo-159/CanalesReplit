@@ -2,29 +2,41 @@
 
 ## Requisitos
 - Docker instalado
-- Cuenta en Koyeb (o cualquier servicio de hosting con Docker)
-- Base de datos PostgreSQL
+- Docker Compose (opcional, para desarrollo local con PostgreSQL incluido)
+- Base de datos PostgreSQL (para producción)
 
-## Construcción Local
+## Despliegue Rápido con Docker Compose
+
+La forma más sencilla de ejecutar la aplicación localmente con todos los servicios:
+
+```bash
+# Inicia la aplicación y base de datos
+docker-compose up -d
+
+# Ver logs
+docker-compose logs -f
+
+# Detener
+docker-compose down
+```
+
+La aplicación estará disponible en `http://localhost:8000`
+
+**Nota:** Las migraciones de base de datos se ejecutan automáticamente al iniciar.
+
+## Construcción Manual
 
 ### Construir la imagen
 ```bash
 docker build -t streaming-app .
 ```
 
-### Ejecutar localmente
+### Ejecutar con base de datos externa
 ```bash
 docker run -p 8000:8000 \
   -e DATABASE_URL="postgresql://user:password@host:5432/dbname" \
+  -v streams_data:/app/streams \
   streaming-app
-```
-
-### Con Docker Compose (incluye PostgreSQL)
-```bash
-# Crear archivo .env con:
-# DATABASE_URL=postgresql://streaming:streaming_password@postgres:5432/streaming_db
-
-docker-compose up -d
 ```
 
 ## Despliegue en Koyeb
@@ -37,8 +49,8 @@ docker-compose up -d
 4. Elige tu repositorio
 5. Koyeb detectará automáticamente el Dockerfile
 6. Configura las variables de entorno:
-   - `DATABASE_URL`: Tu conexión a PostgreSQL
-   - `PORT`: 8000 (Koyeb lo configura automáticamente)
+   - `DATABASE_URL`: Tu conexión a PostgreSQL (requerido)
+   - `PORT`: 8000
 
 ### Opción 2: Desde Docker Registry
 
@@ -61,34 +73,43 @@ docker push tu-usuario/streaming-app
 | PORT | Puerto de la aplicación | No (default: 8000) |
 | NODE_ENV | Entorno de ejecución | No (default: production) |
 
-## Configuración de Koyeb
+## Configuración de Base de Datos
 
-### Recursos Recomendados
-- **Mínimo**: 1 CPU, 512MB RAM
-- **Recomendado para streaming**: 2 CPU, 1GB RAM
-- **Producción 24/7**: 2+ CPU, 2GB+ RAM
+### Opciones Gratuitas
 
-### Health Check
-El endpoint `/api/health` está configurado para verificar el estado de la aplicación.
-
-### Persistencia
-Los segmentos HLS se almacenan temporalmente en `/app/streams`. Para producción 24/7, considera:
-- Montar un volumen persistente
-- O regenerar streams al reiniciar (comportamiento actual)
-
-## Base de Datos
-
-### Opción gratuita: Neon
+#### Neon (Recomendado)
 1. Crea una cuenta en [neon.tech](https://neon.tech)
 2. Crea un proyecto
 3. Copia la connection string
 4. Úsala como `DATABASE_URL`
 
-### Opción gratuita: Supabase
+#### Supabase
 1. Crea una cuenta en [supabase.com](https://supabase.com)
 2. Crea un proyecto
 3. Ve a Settings > Database
 4. Copia la connection string
+
+### Base de datos incluida (solo desarrollo local)
+El `docker-compose.yml` incluye PostgreSQL preconfigurado:
+- Usuario: `streaming`
+- Password: `streaming_password`
+- Base de datos: `streaming_db`
+
+## Recursos Recomendados
+
+| Uso | CPU | RAM |
+|-----|-----|-----|
+| Mínimo | 1 | 512MB |
+| Streaming activo | 2 | 1GB |
+| Producción 24/7 | 2+ | 2GB+ |
+
+## Health Check
+
+El endpoint `/api/health` verifica el estado de la aplicación.
+
+```bash
+curl https://tu-app.koyeb.app/api/health
+```
 
 ## Verificar Despliegue
 
@@ -98,17 +119,39 @@ curl https://tu-app.koyeb.app/api/health
 
 # Ver canales
 curl https://tu-app.koyeb.app/api/channels
+
+# Ver estadísticas
+curl https://tu-app.koyeb.app/api/stats
 ```
 
 ## Solución de Problemas
+
+### Error: relation "channels" does not exist
+Las migraciones no se ejecutaron. Esto se soluciona automáticamente al reiniciar el contenedor. Si persiste:
+```bash
+# Con docker-compose
+docker-compose down
+docker-compose up -d
+
+# Manual
+docker exec -it <container_id> npx drizzle-kit push --force
+```
 
 ### Error: ffmpeg not found
 Asegúrate de que la imagen Docker se construyó correctamente con ffmpeg instalado.
 
 ### Error: ECONNREFUSED database
-Verifica que DATABASE_URL es correcta y la base de datos es accesible desde Koyeb.
+- Verifica que `DATABASE_URL` es correcta
+- Comprueba que la base de datos es accesible desde el contenedor
+- Para docker-compose, espera a que PostgreSQL esté completamente iniciado
 
 ### Streams no funcionan
-1. Verifica que los videos URL son accesibles
-2. Revisa los logs en Koyeb dashboard
+1. Verifica que las URLs de videos son accesibles públicamente
+2. Revisa los logs: `docker-compose logs app`
 3. El endpoint `/api/channels/:id/status` muestra errores específicos
+
+### Container se reinicia constantemente
+Revisa los logs para ver el error:
+```bash
+docker-compose logs --tail=50 app
+```

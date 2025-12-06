@@ -29,11 +29,19 @@ RUN apk add --no-cache ffmpeg
 # Copy package files
 COPY package*.json ./
 
-# Install only production dependencies
-RUN npm ci --only=production && npm cache clean --force
+# Install all dependencies (including drizzle-kit for migrations)
+RUN npm ci && npm cache clean --force
 
 # Copy built files from builder stage
 COPY --from=builder /app/dist ./dist
+
+# Copy schema and drizzle config for migrations
+COPY --from=builder /app/shared ./shared
+COPY --from=builder /app/drizzle.config.ts ./
+
+# Copy startup script
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 
 # Create streams directory for HLS segments
 RUN mkdir -p /app/streams && chmod 755 /app/streams
@@ -46,8 +54,9 @@ ENV PORT=8000
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:8000/api/health || exit 1
 
-# Start the application
+# Start the application with entrypoint
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["node", "dist/index.cjs"]
