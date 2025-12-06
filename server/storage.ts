@@ -1,4 +1,7 @@
 import type { Channel, Video, InsertChannel, InsertVideo, ChannelStats } from "@shared/schema";
+import { channels, videos } from "@shared/schema";
+import { db } from "./db";
+import { eq, desc, asc, count, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
 export interface IStorage {
@@ -19,122 +22,185 @@ export interface IStorage {
   getStats(): Promise<ChannelStats>;
 }
 
-export class MemStorage implements IStorage {
-  private channels: Map<string, Channel>;
-
-  constructor() {
-    this.channels = new Map();
-  }
-
+// DatabaseStorage implementation - javascript_database integration
+export class DatabaseStorage implements IStorage {
   async getChannels(): Promise<Channel[]> {
-    return Array.from(this.channels.values()).sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
+    const dbChannels = await db.select().from(channels).orderBy(desc(channels.createdAt));
+    
+    const result: Channel[] = [];
+    for (const ch of dbChannels) {
+      const channelVideos = await db.select().from(videos)
+        .where(eq(videos.channelId, ch.id))
+        .orderBy(asc(videos.order));
+      
+      result.push({
+        id: ch.id,
+        name: ch.name,
+        description: ch.description || "",
+        status: ch.status as "idle" | "live" | "error",
+        videos: channelVideos.map(v => ({
+          id: v.id,
+          url: v.url,
+          title: v.title,
+          duration: v.duration,
+          order: v.order,
+        })),
+        createdAt: ch.createdAt.toISOString(),
+      });
+    }
+    
+    return result;
   }
 
   async getChannel(id: string): Promise<Channel | undefined> {
-    return this.channels.get(id);
+    const [ch] = await db.select().from(channels).where(eq(channels.id, id));
+    if (!ch) return undefined;
+
+    const channelVideos = await db.select().from(videos)
+      .where(eq(videos.channelId, id))
+      .orderBy(asc(videos.order));
+
+    return {
+      id: ch.id,
+      name: ch.name,
+      description: ch.description || "",
+      status: ch.status as "idle" | "live" | "error",
+      videos: channelVideos.map(v => ({
+        id: v.id,
+        url: v.url,
+        title: v.title,
+        duration: v.duration,
+        order: v.order,
+      })),
+      createdAt: ch.createdAt.toISOString(),
+    };
   }
 
   async createChannel(data: InsertChannel): Promise<Channel> {
     const id = randomUUID();
-    const channel: Channel = {
+    const [created] = await db.insert(channels).values({
       id,
       name: data.name,
       description: data.description || "",
       status: "idle",
+    }).returning();
+
+    return {
+      id: created.id,
+      name: created.name,
+      description: created.description || "",
+      status: created.status as "idle" | "live" | "error",
       videos: [],
-      createdAt: new Date().toISOString(),
+      createdAt: created.createdAt.toISOString(),
     };
-    this.channels.set(id, channel);
-    return channel;
   }
 
   async updateChannel(id: string, data: InsertChannel): Promise<Channel | undefined> {
-    const channel = this.channels.get(id);
-    if (!channel) return undefined;
-    
-    const updated: Channel = {
-      ...channel,
-      name: data.name,
-      description: data.description || "",
+    const [updated] = await db.update(channels)
+      .set({
+        name: data.name,
+        description: data.description || "",
+      })
+      .where(eq(channels.id, id))
+      .returning();
+
+    if (!updated) return undefined;
+
+    const channelVideos = await db.select().from(videos)
+      .where(eq(videos.channelId, id))
+      .orderBy(asc(videos.order));
+
+    return {
+      id: updated.id,
+      name: updated.name,
+      description: updated.description || "",
+      status: updated.status as "idle" | "live" | "error",
+      videos: channelVideos.map(v => ({
+        id: v.id,
+        url: v.url,
+        title: v.title,
+        duration: v.duration,
+        order: v.order,
+      })),
+      createdAt: updated.createdAt.toISOString(),
     };
-    this.channels.set(id, updated);
-    return updated;
   }
 
   async deleteChannel(id: string): Promise<boolean> {
-    return this.channels.delete(id);
+    const result = await db.delete(channels).where(eq(channels.id, id)).returning();
+    return result.length > 0;
   }
 
   async updateChannelStatus(id: string, status: Channel["status"]): Promise<void> {
-    const channel = this.channels.get(id);
-    if (channel) {
-      channel.status = status;
-      this.channels.set(id, channel);
-    }
+    await db.update(channels).set({ status }).where(eq(channels.id, id));
   }
 
   async addVideo(channelId: string, data: InsertVideo): Promise<Video | undefined> {
-    const channel = this.channels.get(channelId);
-    if (!channel) return undefined;
+    const [ch] = await db.select().from(channels).where(eq(channels.id, channelId));
+    if (!ch) return undefined;
 
-    const video: Video = {
-      id: randomUUID(),
+    const existingVideos = await db.select().from(videos).where(eq(videos.channelId, channelId));
+    const nextOrder = existingVideos.length;
+
+    const id = randomUUID();
+    const [created] = await db.insert(videos).values({
+      id,
+      channelId,
       url: data.url,
       title: data.title,
       duration: data.duration || 0,
-      order: channel.videos.length,
+      order: nextOrder,
+    }).returning();
+
+    return {
+      id: created.id,
+      url: created.url,
+      title: created.title,
+      duration: created.duration,
+      order: created.order,
     };
-    
-    channel.videos.push(video);
-    this.channels.set(channelId, channel);
-    return video;
   }
 
   async deleteVideo(channelId: string, videoId: string): Promise<boolean> {
-    const channel = this.channels.get(channelId);
-    if (!channel) return false;
+    const result = await db.delete(videos)
+      .where(eq(videos.id, videoId))
+      .returning();
+    
+    if (result.length === 0) return false;
 
-    const index = channel.videos.findIndex((v) => v.id === videoId);
-    if (index === -1) return false;
-
-    channel.videos.splice(index, 1);
     // Reorder remaining videos
-    channel.videos.forEach((v, i) => {
-      v.order = i;
-    });
-    this.channels.set(channelId, channel);
+    const remainingVideos = await db.select().from(videos)
+      .where(eq(videos.channelId, channelId))
+      .orderBy(asc(videos.order));
+
+    for (let i = 0; i < remainingVideos.length; i++) {
+      await db.update(videos)
+        .set({ order: i })
+        .where(eq(videos.id, remainingVideos[i].id));
+    }
+
     return true;
   }
 
   async reorderVideos(channelId: string, videoIds: string[]): Promise<void> {
-    const channel = this.channels.get(channelId);
-    if (!channel) return;
-
-    const videoMap = new Map(channel.videos.map((v) => [v.id, v]));
-    channel.videos = videoIds
-      .map((id, index) => {
-        const video = videoMap.get(id);
-        if (video) {
-          video.order = index;
-          return video;
-        }
-        return null;
-      })
-      .filter((v): v is Video => v !== null);
-    
-    this.channels.set(channelId, channel);
+    for (let i = 0; i < videoIds.length; i++) {
+      await db.update(videos)
+        .set({ order: i })
+        .where(eq(videos.id, videoIds[i]));
+    }
   }
 
   async getStats(): Promise<ChannelStats> {
-    const channels = Array.from(this.channels.values());
+    const [channelCount] = await db.select({ count: count() }).from(channels);
+    const [liveCount] = await db.select({ count: count() }).from(channels).where(eq(channels.status, "live"));
+    const [videoCount] = await db.select({ count: count() }).from(videos);
+
     return {
-      totalChannels: channels.length,
-      activeStreams: channels.filter((c) => c.status === "live").length,
-      totalVideos: channels.reduce((acc, c) => acc + c.videos.length, 0),
+      totalChannels: channelCount?.count || 0,
+      activeStreams: liveCount?.count || 0,
+      totalVideos: videoCount?.count || 0,
     };
   }
 }
 
-export const storage = new MemStorage();
+export const storage = new DatabaseStorage();

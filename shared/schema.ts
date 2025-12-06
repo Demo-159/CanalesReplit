@@ -1,11 +1,47 @@
 import { z } from "zod";
+import { pgTable, text, integer, timestamp, varchar } from "drizzle-orm/pg-core";
+import { relations } from "drizzle-orm";
+import { createInsertSchema } from "drizzle-zod";
 
-// Video in a playlist
+// Database Tables - javascript_database integration
+export const channels = pgTable("channels", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  name: varchar("name", { length: 50 }).notNull(),
+  description: text("description").default(""),
+  status: varchar("status", { length: 10 }).notNull().default("idle"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const videos = pgTable("videos", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  channelId: varchar("channel_id", { length: 36 }).notNull().references(() => channels.id, { onDelete: "cascade" }),
+  url: text("url").notNull(),
+  title: varchar("title", { length: 255 }).notNull(),
+  duration: integer("duration").default(0).notNull(),
+  order: integer("order").default(0).notNull(),
+});
+
+export const channelsRelations = relations(channels, ({ many }) => ({
+  videos: many(videos),
+}));
+
+export const videosRelations = relations(videos, ({ one }) => ({
+  channel: one(channels, {
+    fields: [videos.channelId],
+    references: [channels.id],
+  }),
+}));
+
+// Types
+export type DbChannel = typeof channels.$inferSelect;
+export type DbVideo = typeof videos.$inferSelect;
+
+// Video interface for API responses
 export interface Video {
   id: string;
   url: string;
   title: string;
-  duration: number; // in seconds
+  duration: number;
   order: number;
 }
 
@@ -17,7 +53,7 @@ export const insertVideoSchema = z.object({
 
 export type InsertVideo = z.infer<typeof insertVideoSchema>;
 
-// Channel
+// Channel interface for API responses
 export interface Channel {
   id: string;
   name: string;
