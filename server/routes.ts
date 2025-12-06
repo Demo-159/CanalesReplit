@@ -1,11 +1,112 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertChannelSchema, insertVideoSchema } from "@shared/schema";
+import { insertChannelSchema, insertVideoSchema, type Channel } from "@shared/schema";
 import { startStream, stopStream, getStreamPath } from "./streaming";
 import express from "express";
 import * as path from "path";
 import * as fs from "fs";
+
+// Helper function to format date for XMLTV
+function formatXMLTVDate(date: Date): string {
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  const year = date.getUTCFullYear();
+  const month = pad(date.getUTCMonth() + 1);
+  const day = pad(date.getUTCDate());
+  const hours = pad(date.getUTCHours());
+  const minutes = pad(date.getUTCMinutes());
+  const seconds = pad(date.getUTCSeconds());
+  return `${year}${month}${day}${hours}${minutes}${seconds} +0000`;
+}
+
+// Escape XML special characters
+function escapeXML(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+// Generate EPG for a single channel
+function generateChannelEPG(channel: Channel, baseUrl: string): string {
+  const channelId = `channel_${channel.id}`;
+  let programmes = "";
+  
+  // Calculate programme schedule based on video durations
+  let currentTime = new Date();
+  // Start from the beginning of current hour for cleaner schedule
+  currentTime.setMinutes(0, 0, 0);
+  
+  // Generate 24 hours of programming (looping videos)
+  const totalDuration = channel.videos.reduce((sum, v) => sum + (v.duration || 3600), 0);
+  const loopsNeeded = totalDuration > 0 ? Math.ceil((24 * 3600) / totalDuration) : 1;
+  
+  for (let loop = 0; loop < loopsNeeded; loop++) {
+    for (const video of channel.videos) {
+      const startTime = new Date(currentTime);
+      const duration = video.duration || 3600; // default 1 hour if no duration
+      currentTime = new Date(currentTime.getTime() + duration * 1000);
+      const endTime = new Date(currentTime);
+      
+      programmes += `  <programme start="${formatXMLTVDate(startTime)}" stop="${formatXMLTVDate(endTime)}" channel="${channelId}">
+    <title lang="es">${escapeXML(video.title)}</title>
+    <desc lang="es">${escapeXML(video.url)}</desc>
+  </programme>\n`;
+    }
+  }
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE tv SYSTEM "xmltv.dtd">
+<tv generator-info-name="IPTV Channel Manager" generator-info-url="${baseUrl}">
+  <channel id="${channelId}">
+    <display-name lang="es">${escapeXML(channel.name)}</display-name>
+    <desc lang="es">${escapeXML(channel.description || "")}</desc>
+  </channel>
+${programmes}</tv>`;
+}
+
+// Generate full EPG for all channels
+function generateFullEPG(channels: Channel[], baseUrl: string): string {
+  let channelElements = "";
+  let programmes = "";
+  
+  for (const channel of channels) {
+    const channelId = `channel_${channel.id}`;
+    
+    channelElements += `  <channel id="${channelId}">
+    <display-name lang="es">${escapeXML(channel.name)}</display-name>
+    <desc lang="es">${escapeXML(channel.description || "")}</desc>
+  </channel>\n`;
+    
+    // Calculate programme schedule
+    let currentTime = new Date();
+    currentTime.setMinutes(0, 0, 0);
+    
+    const totalDuration = channel.videos.reduce((sum, v) => sum + (v.duration || 3600), 0);
+    const loopsNeeded = totalDuration > 0 ? Math.ceil((24 * 3600) / totalDuration) : 1;
+    
+    for (let loop = 0; loop < loopsNeeded; loop++) {
+      for (const video of channel.videos) {
+        const startTime = new Date(currentTime);
+        const duration = video.duration || 3600;
+        currentTime = new Date(currentTime.getTime() + duration * 1000);
+        const endTime = new Date(currentTime);
+        
+        programmes += `  <programme start="${formatXMLTVDate(startTime)}" stop="${formatXMLTVDate(endTime)}" channel="${channelId}">
+    <title lang="es">${escapeXML(video.title)}</title>
+    <desc lang="es">${escapeXML(video.url)}</desc>
+  </programme>\n`;
+      }
+    }
+  }
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE tv SYSTEM "xmltv.dtd">
+<tv generator-info-name="IPTV Channel Manager" generator-info-url="${baseUrl}">
+${channelElements}${programmes}</tv>`;
+}
 
 export async function registerRoutes(
   httpServer: Server,
@@ -217,6 +318,42 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error reordering videos:", error);
       res.status(500).json({ error: "Failed to reorder videos" });
+    }
+  });
+
+  // Generate EPG XML for a single channel (XMLTV format)
+  app.get("/api/channels/:id/epg.xml", async (req, res) => {
+    try {
+      const channel = await storage.getChannel(req.params.id);
+      if (!channel) {
+        return res.status(404).json({ error: "Channel not found" });
+      }
+      
+      const baseUrl = `${req.protocol}://${req.get("host")}`;
+      const xml = generateChannelEPG(channel, baseUrl);
+      
+      res.setHeader("Content-Type", "application/xml");
+      res.setHeader("Content-Disposition", `attachment; filename="${channel.name.replace(/[^a-z0-9]/gi, '_')}_epg.xml"`);
+      res.send(xml);
+    } catch (error) {
+      console.error("Error generating EPG:", error);
+      res.status(500).json({ error: "Failed to generate EPG" });
+    }
+  });
+
+  // Generate EPG XML for all channels
+  app.get("/api/epg.xml", async (_req, res) => {
+    try {
+      const channels = await storage.getChannels();
+      const baseUrl = `${_req.protocol}://${_req.get("host")}`;
+      const xml = generateFullEPG(channels, baseUrl);
+      
+      res.setHeader("Content-Type", "application/xml");
+      res.setHeader("Content-Disposition", 'attachment; filename="epg.xml"');
+      res.send(xml);
+    } catch (error) {
+      console.error("Error generating EPG:", error);
+      res.status(500).json({ error: "Failed to generate EPG" });
     }
   });
 
