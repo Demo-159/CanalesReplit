@@ -94,41 +94,61 @@ function startFFmpegProcess(
   // Calculate GOP size based on segment duration (assuming 30fps)
   const gopSize = config.segmentDuration * 30;
   
-  // FFmpeg arguments for HLS output with segment continuation
+  // Use larger playlist size for better buffering (minimum 15 segments)
+  const playlistSize = Math.max(config.playlistSize, 15);
+  
+  // Larger buffer for smoother playback (4x bitrate for better buffering)
+  const bufferSize = config.videoBitrate * 4;
+  
+  // FFmpeg arguments optimized for smooth streaming with large preload
   const ffmpegArgs = [
     "-hide_banner",
     "-loglevel", "error",
-    "-threads", config.threads.toString(),
-    "-thread_queue_size", "2048",
-    "-re", // Real-time read
+    // Input options for network streams
+    "-reconnect", "1",
+    "-reconnect_streamed", "1", 
+    "-reconnect_delay_max", "5",
+    "-analyzeduration", "10000000",
+    "-probesize", "10000000",
+    "-fflags", "+genpts+discardcorrupt",
+    "-threads", Math.max(config.threads, 4).toString(),
+    "-thread_queue_size", "8192",
+    // Input
     "-i", videoUrl,
+    // Video encoding - optimized for streaming
     "-c:v", "libx264",
     "-preset", config.preset,
-    "-tune", "zerolatency",
-    "-profile:v", "baseline",
-    "-level", "3.0",
+    "-profile:v", "main",
+    "-level", "4.0",
     "-pix_fmt", "yuv420p",
     "-g", gopSize.toString(),
     "-keyint_min", gopSize.toString(),
     "-sc_threshold", "0",
     "-b:v", `${config.videoBitrate}k`,
-    "-maxrate", `${config.videoBitrate}k`,
-    "-bufsize", `${config.videoBitrate * 2}k`,
+    "-maxrate", `${Math.round(config.videoBitrate * 1.5)}k`,
+    "-bufsize", `${bufferSize}k`,
+    "-bf", "2",
+    "-refs", "3",
+    // Audio encoding
     "-c:a", "aac",
     "-ar", "44100",
     "-b:a", `${config.audioBitrate}k`,
     "-ac", "2",
+    // HLS output with large playlist for buffering
     "-f", "hls",
     "-hls_time", config.segmentDuration.toString(),
-    "-hls_list_size", config.playlistSize.toString(),
-    "-hls_delete_threshold", "2",
+    "-hls_list_size", playlistSize.toString(),
+    "-hls_delete_threshold", "3",
+    "-hls_init_time", "0",
     "-start_number", startNumber.toString(),
     "-hls_flags", startNumber > 0 
-      ? "append_list+delete_segments+omit_endlist+independent_segments" 
-      : "delete_segments+omit_endlist+independent_segments",
+      ? "append_list+delete_segments+omit_endlist+independent_segments+temp_file" 
+      : "delete_segments+omit_endlist+independent_segments+temp_file",
     "-hls_segment_filename", path.join(channelDir, "segment_%d.ts"),
     playlistPath,
   ];
+
+  console.log(`[Stream ${channelId}] Starting FFmpeg with playlist size ${playlistSize}, buffer ${bufferSize}k`);
 
   return spawn("ffmpeg", ffmpegArgs, {
     stdio: ["ignore", "pipe", "pipe"],
