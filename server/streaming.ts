@@ -1,11 +1,16 @@
 import { spawn, ChildProcess } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import type { Channel, StreamingConfig } from "@shared/schema";
+import type { Channel, StreamingConfig, Video } from "@shared/schema";
+import { getAssetDir, getAssetPlaylistPath } from "./asset-processor";
 
 const STREAMS_DIR = process.env.NODE_ENV === "production" 
   ? "/app/streams" 
   : path.join(process.cwd(), "streams");
+
+const ASSETS_DIR = process.env.NODE_ENV === "production" 
+  ? "/app/prepared_assets" 
+  : path.join(process.cwd(), "prepared_assets");
 
 try {
   if (!fs.existsSync(STREAMS_DIR)) {
@@ -137,6 +142,74 @@ function startInfiniteLoopFFmpeg(
   });
 }
 
+function hasAllPreparedAssets(videos: Video[]): boolean {
+  return videos.every(v => v.preparedAssetId);
+}
+
+function generateCombinedPlaylist(channelId: string, videos: Video[]): string | null {
+  const channelDir = ensureStreamsDir(channelId);
+  const playlistPath = path.join(channelDir, "playlist.m3u8");
+  
+  let allSegments: { file: string; duration: number; assetId: string }[] = [];
+  let targetDuration = 0;
+  
+  for (const video of videos.sort((a, b) => a.order - b.order)) {
+    if (!video.preparedAssetId) continue;
+    
+    const assetDir = getAssetDir(video.preparedAssetId);
+    const assetPlaylist = path.join(assetDir, "playlist.m3u8");
+    
+    if (!fs.existsSync(assetPlaylist)) {
+      console.error(`[Stream ${channelId}] Asset playlist not found: ${assetPlaylist}`);
+      return null;
+    }
+    
+    const content = fs.readFileSync(assetPlaylist, "utf-8");
+    const lines = content.split("\n");
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line.startsWith("#EXTINF:")) {
+        const durationMatch = line.match(/#EXTINF:([\d.]+)/);
+        const duration = durationMatch ? parseFloat(durationMatch[1]) : 4;
+        targetDuration = Math.max(targetDuration, Math.ceil(duration));
+        
+        const nextLine = lines[i + 1]?.trim();
+        if (nextLine && !nextLine.startsWith("#")) {
+          allSegments.push({
+            file: nextLine,
+            duration,
+            assetId: video.preparedAssetId,
+          });
+        }
+      }
+    }
+  }
+  
+  if (allSegments.length === 0) {
+    console.error(`[Stream ${channelId}] No segments found in assets`);
+    return null;
+  }
+  
+  let playlist = "#EXTM3U\n";
+  playlist += "#EXT-X-VERSION:3\n";
+  playlist += `#EXT-X-TARGETDURATION:${targetDuration}\n`;
+  playlist += "#EXT-X-MEDIA-SEQUENCE:0\n";
+  playlist += "#EXT-X-PLAYLIST-TYPE:VOD\n";
+  
+  for (const segment of allSegments) {
+    playlist += `#EXTINF:${segment.duration.toFixed(6)},\n`;
+    playlist += `/assets/${segment.assetId}/${segment.file}\n`;
+  }
+  
+  playlist += "#EXT-X-ENDLIST\n";
+  
+  fs.writeFileSync(playlistPath, playlist);
+  console.log(`[Stream ${channelId}] Generated combined playlist with ${allSegments.length} segments`);
+  
+  return playlistPath;
+}
+
 export async function startStream(channel: Channel): Promise<boolean> {
   if (channel.videos.length === 0) {
     console.log(`[Stream ${channel.id}] Cannot start: no videos`);
@@ -149,10 +222,32 @@ export async function startStream(channel: Channel): Promise<boolean> {
   cleanupStream(channel.id);
   ensureStreamsDir(channel.id);
   
-  const videoUrls = channel.videos
-    .sort((a, b) => a.order - b.order)
-    .map((v) => v.url);
+  const sortedVideos = channel.videos.sort((a, b) => a.order - b.order);
   
+  if (hasAllPreparedAssets(sortedVideos)) {
+    console.log(`[Stream ${channel.id}] Using pre-segmented assets mode`);
+    
+    const playlistPath = generateCombinedPlaylist(channel.id, sortedVideos);
+    if (!playlistPath) {
+      console.error(`[Stream ${channel.id}] Failed to generate combined playlist`);
+      return false;
+    }
+    
+    const state: StreamState = {
+      process: null,
+      channelId: channel.id,
+      videoUrls: sortedVideos.map(v => v.url),
+      lastError: null,
+      config: channel.streamingConfig,
+      isActive: true,
+    };
+    
+    activeStreams.set(channel.id, state);
+    console.log(`[Stream ${channel.id}] READY with pre-segmented assets (instant start)`);
+    return true;
+  }
+  
+  const videoUrls = sortedVideos.map((v) => v.url);
   const primaryVideoUrl = videoUrls[0];
 
   console.log(`[Stream ${channel.id}] Starting INFINITE LOOP with video: ${primaryVideoUrl}`);
@@ -200,9 +295,9 @@ export async function startStream(channel: Channel): Promise<boolean> {
     });
     
     const playlistPath = path.join(channelDir, "playlist.m3u8");
-    const minSegments = 20; // More segments for better buffer
+    const minSegments = 20;
     let attempts = 0;
-    const maxAttempts = 120; // More time to build buffer
+    const maxAttempts = 120;
     
     console.log(`[Stream ${channel.id}] Waiting for ${minSegments} segments (~${minSegments * channel.streamingConfig.segmentDuration}s buffer) before ready...`);
     

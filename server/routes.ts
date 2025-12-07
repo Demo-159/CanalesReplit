@@ -1,8 +1,9 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertChannelSchema, insertVideoSchema, streamingConfigSchema, type Channel } from "@shared/schema";
+import { insertChannelSchema, insertVideoSchema, streamingConfigSchema, insertPreparedAssetSchema, type Channel } from "@shared/schema";
 import { startStream, stopStream, getStreamPath } from "./streaming";
+import { processAsset, deleteAsset, isProcessing, getAssetDir, cancelProcessing } from "./asset-processor";
 import express from "express";
 import * as path from "path";
 import * as fs from "fs";
@@ -388,24 +389,168 @@ export async function registerRoutes(
     }
   });
 
+  // ============ PREPARED ASSETS ============
+  
+  // Get all prepared assets
+  app.get("/api/assets", async (_req, res) => {
+    try {
+      const assets = await storage.getPreparedAssets();
+      res.json(assets);
+    } catch (error) {
+      console.error("Error getting assets:", error);
+      res.status(500).json({ error: "Failed to get assets" });
+    }
+  });
+
+  // Get single prepared asset
+  app.get("/api/assets/:id", async (req, res) => {
+    try {
+      const asset = await storage.getPreparedAsset(req.params.id);
+      if (!asset) {
+        return res.status(404).json({ error: "Asset not found" });
+      }
+      res.json(asset);
+    } catch (error) {
+      console.error("Error getting asset:", error);
+      res.status(500).json({ error: "Failed to get asset" });
+    }
+  });
+
+  // Create and start processing a new asset
+  app.post("/api/assets", async (req, res) => {
+    try {
+      const parsed = insertPreparedAssetSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.errors });
+      }
+      
+      const asset = await storage.createPreparedAsset(parsed.data);
+      
+      // Start processing in background
+      processAsset(asset.id).catch(err => {
+        console.error(`Background processing error for asset ${asset.id}:`, err);
+      });
+      
+      res.status(201).json(asset);
+    } catch (error) {
+      console.error("Error creating asset:", error);
+      res.status(500).json({ error: "Failed to create asset" });
+    }
+  });
+
+  // Retry processing a failed asset
+  app.post("/api/assets/:id/retry", async (req, res) => {
+    try {
+      const asset = await storage.getPreparedAsset(req.params.id);
+      if (!asset) {
+        return res.status(404).json({ error: "Asset not found" });
+      }
+      
+      if (asset.status === "processing") {
+        return res.status(400).json({ error: "Asset is already processing" });
+      }
+      
+      await storage.updatePreparedAssetStatus(req.params.id, "pending");
+      
+      // Start processing in background
+      processAsset(req.params.id).catch(err => {
+        console.error(`Background processing error for asset ${req.params.id}:`, err);
+      });
+      
+      const updatedAsset = await storage.getPreparedAsset(req.params.id);
+      res.json(updatedAsset);
+    } catch (error) {
+      console.error("Error retrying asset:", error);
+      res.status(500).json({ error: "Failed to retry asset" });
+    }
+  });
+
+  // Cancel processing
+  app.post("/api/assets/:id/cancel", async (req, res) => {
+    try {
+      const asset = await storage.getPreparedAsset(req.params.id);
+      if (!asset) {
+        return res.status(404).json({ error: "Asset not found" });
+      }
+      
+      if (asset.status !== "processing") {
+        return res.status(400).json({ error: "Asset is not processing" });
+      }
+      
+      cancelProcessing(req.params.id);
+      await storage.updatePreparedAssetStatus(req.params.id, "error", {
+        errorMessage: "Cancelled by user",
+      });
+      
+      const updatedAsset = await storage.getPreparedAsset(req.params.id);
+      res.json(updatedAsset);
+    } catch (error) {
+      console.error("Error cancelling asset:", error);
+      res.status(500).json({ error: "Failed to cancel asset" });
+    }
+  });
+
+  // Delete prepared asset
+  app.delete("/api/assets/:id", async (req, res) => {
+    try {
+      const deleted = await deleteAsset(req.params.id);
+      if (!deleted) {
+        return res.status(404).json({ error: "Asset not found" });
+      }
+      res.status(204).send();
+    } catch (error) {
+      console.error("Error deleting asset:", error);
+      res.status(500).json({ error: "Failed to delete asset" });
+    }
+  });
+
+  // Add video to channel from prepared asset
+  app.post("/api/channels/:id/videos/from-asset", async (req, res) => {
+    try {
+      const { assetId } = req.body;
+      if (!assetId) {
+        return res.status(400).json({ error: "assetId is required" });
+      }
+      
+      const video = await storage.addVideoFromAsset(req.params.id, assetId);
+      if (!video) {
+        return res.status(404).json({ error: "Channel or asset not found, or asset not ready" });
+      }
+      res.status(201).json(video);
+    } catch (error) {
+      console.error("Error adding video from asset:", error);
+      res.status(500).json({ error: "Failed to add video from asset" });
+    }
+  });
+
+  // ============ SYSTEM METRICS ============
+  
+  // Get system metrics
+  app.get("/api/metrics", async (_req, res) => {
+    try {
+      const metrics = await storage.getSystemMetrics();
+      res.json(metrics);
+    } catch (error) {
+      console.error("Error getting metrics:", error);
+      res.status(500).json({ error: "Failed to get metrics" });
+    }
+  });
+
   // Serve HLS streams with optimized caching for live streaming
   app.use("/streams", (req, res, next) => {
-    // Set proper CORS and content type headers for HLS
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Range");
     res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range");
     
     if (req.path.endsWith(".m3u8")) {
-      // Playlist should never be cached for live streaming
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
       res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
       res.setHeader("Pragma", "no-cache");
       res.setHeader("Expires", "0");
     } else if (req.path.endsWith(".ts")) {
-      // Segments can be cached for a short time since they don't change
       res.setHeader("Content-Type", "video/MP2T");
-      res.setHeader("Cache-Control", "public, max-age=300");
+      res.setHeader("Cache-Control", "public, max-age=31536000");
     }
     
     next();
@@ -413,6 +558,28 @@ export async function registerRoutes(
     maxAge: 0,
     etag: false,
     lastModified: false,
+  }));
+
+  // Serve prepared assets HLS
+  app.use("/assets", (req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Range");
+    res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range");
+    
+    if (req.path.endsWith(".m3u8")) {
+      res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+      res.setHeader("Cache-Control", "public, max-age=31536000");
+    } else if (req.path.endsWith(".ts")) {
+      res.setHeader("Content-Type", "video/MP2T");
+      res.setHeader("Cache-Control", "public, max-age=31536000");
+    }
+    
+    next();
+  }, express.static(path.join(process.cwd(), "prepared_assets"), {
+    maxAge: 31536000000,
+    etag: true,
+    lastModified: true,
   }));
 
   return httpServer;

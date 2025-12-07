@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { pgTable, text, integer, timestamp, varchar } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, timestamp, varchar, bigint } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 
@@ -26,6 +26,22 @@ export const videos = pgTable("videos", {
   title: varchar("title", { length: 255 }).notNull(),
   duration: integer("duration").default(0).notNull(),
   order: integer("order").default(0).notNull(),
+  preparedAssetId: varchar("prepared_asset_id", { length: 36 }).references(() => preparedAssets.id),
+});
+
+// Pre-segmented video assets
+export const preparedAssets = pgTable("prepared_assets", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  title: varchar("title", { length: 255 }).notNull(),
+  sourceUrl: text("source_url").notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("pending"), // pending, processing, ready, error
+  duration: integer("duration").default(0).notNull(),
+  segmentCount: integer("segment_count").default(0).notNull(),
+  segmentDuration: integer("segment_duration").default(4).notNull(),
+  totalSize: bigint("total_size", { mode: "number" }).default(0).notNull(), // bytes
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  processedAt: timestamp("processed_at"),
+  errorMessage: text("error_message"),
 });
 
 export const channelsRelations = relations(channels, ({ many }) => ({
@@ -37,11 +53,20 @@ export const videosRelations = relations(videos, ({ one }) => ({
     fields: [videos.channelId],
     references: [channels.id],
   }),
+  preparedAsset: one(preparedAssets, {
+    fields: [videos.preparedAssetId],
+    references: [preparedAssets.id],
+  }),
+}));
+
+export const preparedAssetsRelations = relations(preparedAssets, ({ many }) => ({
+  videos: many(videos),
 }));
 
 // Types
 export type DbChannel = typeof channels.$inferSelect;
 export type DbVideo = typeof videos.$inferSelect;
+export type DbPreparedAsset = typeof preparedAssets.$inferSelect;
 
 // Video interface for API responses
 export interface Video {
@@ -50,6 +75,22 @@ export interface Video {
   title: string;
   duration: number;
   order: number;
+  preparedAssetId?: string | null;
+}
+
+// Prepared Asset interface for API responses
+export interface PreparedAsset {
+  id: string;
+  title: string;
+  sourceUrl: string;
+  status: "pending" | "processing" | "ready" | "error";
+  duration: number;
+  segmentCount: number;
+  segmentDuration: number;
+  totalSize: number;
+  createdAt: string;
+  processedAt: string | null;
+  errorMessage: string | null;
 }
 
 export const insertVideoSchema = z.object({
@@ -106,4 +147,36 @@ export interface ChannelStats {
   totalChannels: number;
   activeStreams: number;
   totalVideos: number;
+  totalPreparedAssets: number;
+  totalStorageUsed: number;
 }
+
+// System Metrics
+export interface SystemMetrics {
+  cpu: {
+    usage: number;
+    cores: number;
+  };
+  memory: {
+    total: number;
+    used: number;
+    free: number;
+    usagePercent: number;
+  };
+  disk: {
+    total: number;
+    used: number;
+    free: number;
+    usagePercent: number;
+  };
+  uptime: number;
+}
+
+// Insert schema for prepared assets
+export const insertPreparedAssetSchema = z.object({
+  title: z.string().min(1, "El título es requerido").max(255),
+  sourceUrl: z.string().url("URL inválida"),
+  segmentDuration: z.number().min(2).max(10).default(4),
+});
+
+export type InsertPreparedAsset = z.infer<typeof insertPreparedAssetSchema>;

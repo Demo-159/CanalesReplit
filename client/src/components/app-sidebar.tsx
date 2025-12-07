@@ -1,4 +1,4 @@
-import { Radio, Settings, LayoutDashboard } from "lucide-react";
+import { Radio, Settings, LayoutDashboard, Film, Activity } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   Sidebar,
@@ -23,6 +23,16 @@ const menuItems = [
     title: "Canales",
     url: "/channels",
     icon: Radio,
+  },
+  {
+    title: "Videos",
+    url: "/assets",
+    icon: Film,
+  },
+  {
+    title: "Sistema",
+    url: "/metrics",
+    icon: Activity,
   },
   {
     title: "Configuración",

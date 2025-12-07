@@ -1,8 +1,10 @@
-import type { Channel, Video, InsertChannel, InsertVideo, ChannelStats, StreamingConfig, InsertStreamingConfig } from "@shared/schema";
-import { channels, videos } from "@shared/schema";
+import type { Channel, Video, InsertChannel, InsertVideo, ChannelStats, StreamingConfig, InsertStreamingConfig, PreparedAsset, InsertPreparedAsset, SystemMetrics } from "@shared/schema";
+import { channels, videos, preparedAssets } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, asc, count, sql } from "drizzle-orm";
+import { eq, desc, asc, count, sql, sum } from "drizzle-orm";
 import { randomUUID } from "crypto";
+import * as os from "os";
+import { execSync } from "child_process";
 
 export interface IStorage {
   // Channels
@@ -16,11 +18,20 @@ export interface IStorage {
   
   // Videos
   addVideo(channelId: string, data: InsertVideo): Promise<Video | undefined>;
+  addVideoFromAsset(channelId: string, assetId: string): Promise<Video | undefined>;
   deleteVideo(channelId: string, videoId: string): Promise<boolean>;
   reorderVideos(channelId: string, videoIds: string[]): Promise<void>;
   
-  // Stats
+  // Prepared Assets
+  getPreparedAssets(): Promise<PreparedAsset[]>;
+  getPreparedAsset(id: string): Promise<PreparedAsset | undefined>;
+  createPreparedAsset(data: InsertPreparedAsset): Promise<PreparedAsset>;
+  updatePreparedAssetStatus(id: string, status: PreparedAsset["status"], extra?: Partial<PreparedAsset>): Promise<void>;
+  deletePreparedAsset(id: string): Promise<boolean>;
+  
+  // Stats & Metrics
   getStats(): Promise<ChannelStats>;
+  getSystemMetrics(): Promise<SystemMetrics>;
 }
 
 // Default streaming config - HYPER OPTIMIZED for zero stuttering, low CPU
@@ -260,11 +271,173 @@ export class DatabaseStorage implements IStorage {
     const [channelCount] = await db.select({ count: count() }).from(channels);
     const [liveCount] = await db.select({ count: count() }).from(channels).where(eq(channels.status, "live"));
     const [videoCount] = await db.select({ count: count() }).from(videos);
+    const [assetCount] = await db.select({ count: count() }).from(preparedAssets);
+    const [storageSum] = await db.select({ total: sql<number>`COALESCE(SUM(${preparedAssets.totalSize}), 0)` }).from(preparedAssets);
 
     return {
       totalChannels: channelCount?.count || 0,
       activeStreams: liveCount?.count || 0,
       totalVideos: videoCount?.count || 0,
+      totalPreparedAssets: assetCount?.count || 0,
+      totalStorageUsed: Number(storageSum?.total) || 0,
+    };
+  }
+
+  async addVideoFromAsset(channelId: string, assetId: string): Promise<Video | undefined> {
+    const [ch] = await db.select().from(channels).where(eq(channels.id, channelId));
+    if (!ch) return undefined;
+
+    const [asset] = await db.select().from(preparedAssets).where(eq(preparedAssets.id, assetId));
+    if (!asset || asset.status !== "ready") return undefined;
+
+    const existingVideos = await db.select().from(videos).where(eq(videos.channelId, channelId));
+    const nextOrder = existingVideos.length;
+
+    const id = randomUUID();
+    const [created] = await db.insert(videos).values({
+      id,
+      channelId,
+      url: asset.sourceUrl,
+      title: asset.title,
+      duration: asset.duration,
+      order: nextOrder,
+      preparedAssetId: assetId,
+    }).returning();
+
+    return {
+      id: created.id,
+      url: created.url,
+      title: created.title,
+      duration: created.duration,
+      order: created.order,
+      preparedAssetId: created.preparedAssetId,
+    };
+  }
+
+  async getPreparedAssets(): Promise<PreparedAsset[]> {
+    const assets = await db.select().from(preparedAssets).orderBy(desc(preparedAssets.createdAt));
+    return assets.map(a => ({
+      id: a.id,
+      title: a.title,
+      sourceUrl: a.sourceUrl,
+      status: a.status as PreparedAsset["status"],
+      duration: a.duration,
+      segmentCount: a.segmentCount,
+      segmentDuration: a.segmentDuration,
+      totalSize: Number(a.totalSize),
+      createdAt: a.createdAt.toISOString(),
+      processedAt: a.processedAt?.toISOString() || null,
+      errorMessage: a.errorMessage,
+    }));
+  }
+
+  async getPreparedAsset(id: string): Promise<PreparedAsset | undefined> {
+    const [a] = await db.select().from(preparedAssets).where(eq(preparedAssets.id, id));
+    if (!a) return undefined;
+
+    return {
+      id: a.id,
+      title: a.title,
+      sourceUrl: a.sourceUrl,
+      status: a.status as PreparedAsset["status"],
+      duration: a.duration,
+      segmentCount: a.segmentCount,
+      segmentDuration: a.segmentDuration,
+      totalSize: Number(a.totalSize),
+      createdAt: a.createdAt.toISOString(),
+      processedAt: a.processedAt?.toISOString() || null,
+      errorMessage: a.errorMessage,
+    };
+  }
+
+  async createPreparedAsset(data: InsertPreparedAsset): Promise<PreparedAsset> {
+    const id = randomUUID();
+    const [created] = await db.insert(preparedAssets).values({
+      id,
+      title: data.title,
+      sourceUrl: data.sourceUrl,
+      segmentDuration: data.segmentDuration || 4,
+      status: "pending",
+    }).returning();
+
+    return {
+      id: created.id,
+      title: created.title,
+      sourceUrl: created.sourceUrl,
+      status: created.status as PreparedAsset["status"],
+      duration: created.duration,
+      segmentCount: created.segmentCount,
+      segmentDuration: created.segmentDuration,
+      totalSize: Number(created.totalSize),
+      createdAt: created.createdAt.toISOString(),
+      processedAt: created.processedAt?.toISOString() || null,
+      errorMessage: created.errorMessage,
+    };
+  }
+
+  async updatePreparedAssetStatus(id: string, status: PreparedAsset["status"], extra?: Partial<PreparedAsset>): Promise<void> {
+    const updateData: any = { status };
+    if (extra?.duration !== undefined) updateData.duration = extra.duration;
+    if (extra?.segmentCount !== undefined) updateData.segmentCount = extra.segmentCount;
+    if (extra?.totalSize !== undefined) updateData.totalSize = extra.totalSize;
+    if (extra?.errorMessage !== undefined) updateData.errorMessage = extra.errorMessage;
+    if (status === "ready" || status === "error") updateData.processedAt = new Date();
+
+    await db.update(preparedAssets).set(updateData).where(eq(preparedAssets.id, id));
+  }
+
+  async deletePreparedAsset(id: string): Promise<boolean> {
+    const result = await db.delete(preparedAssets).where(eq(preparedAssets.id, id)).returning();
+    return result.length > 0;
+  }
+
+  async getSystemMetrics(): Promise<SystemMetrics> {
+    const cpus = os.cpus();
+    const totalMemory = os.totalmem();
+    const freeMemory = os.freemem();
+    const usedMemory = totalMemory - freeMemory;
+
+    let cpuUsage = 0;
+    for (const cpu of cpus) {
+      const total = Object.values(cpu.times).reduce((a, b) => a + b, 0);
+      const idle = cpu.times.idle;
+      cpuUsage += ((total - idle) / total) * 100;
+    }
+    cpuUsage = cpuUsage / cpus.length;
+
+    let diskTotal = 0;
+    let diskUsed = 0;
+    let diskFree = 0;
+    try {
+      const dfOutput = execSync("df -B1 / | tail -1").toString().trim();
+      const parts = dfOutput.split(/\s+/);
+      if (parts.length >= 4) {
+        diskTotal = parseInt(parts[1]) || 0;
+        diskUsed = parseInt(parts[2]) || 0;
+        diskFree = parseInt(parts[3]) || 0;
+      }
+    } catch (e) {
+      // Fallback if df command fails
+    }
+
+    return {
+      cpu: {
+        usage: Math.round(cpuUsage * 100) / 100,
+        cores: cpus.length,
+      },
+      memory: {
+        total: totalMemory,
+        used: usedMemory,
+        free: freeMemory,
+        usagePercent: Math.round((usedMemory / totalMemory) * 10000) / 100,
+      },
+      disk: {
+        total: diskTotal,
+        used: diskUsed,
+        free: diskFree,
+        usagePercent: diskTotal > 0 ? Math.round((diskUsed / diskTotal) * 10000) / 100 : 0,
+      },
+      uptime: os.uptime(),
     };
   }
 }
