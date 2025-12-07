@@ -81,22 +81,23 @@ function startInfiniteLoopFFmpeg(
     "-hide_banner",
     "-loglevel", "warning",
     
-    // Input options for infinite loop with proper timestamp handling
-    "-re", // Read input at native frame rate for live streaming
-    "-fflags", "+genpts+igndts", // Generate PTS and ignore DTS to fix timestamp issues
+    // Input options - NO -re flag so segments are generated faster than realtime
+    "-fflags", "+genpts+igndts+discardcorrupt",
     "-stream_loop", "-1",
     "-reconnect", "1",
     "-reconnect_streamed", "1",
     "-reconnect_delay_max", "5",
     "-i", videoUrl,
     
-    // Fix timestamp discontinuities from looping
+    // Fix timestamp issues
     "-avoid_negative_ts", "make_zero",
-    "-start_at_zero",
+    "-copyts",
+    "-vsync", "cfr",
+    "-async", "1",
     
     "-threads", config.threads.toString(),
     
-    // Video encoding with optimized settings for live streaming
+    // Video encoding
     "-c:v", "libx264",
     "-preset", config.preset,
     "-profile:v", "main",
@@ -104,13 +105,13 @@ function startInfiniteLoopFFmpeg(
     "-pix_fmt", "yuv420p",
     "-g", gopSize.toString(),
     "-keyint_min", gopSize.toString(),
+    "-force_key_frames", `expr:gte(t,n_forced*${config.segmentDuration})`,
     "-sc_threshold", "0",
     "-b:v", `${config.videoBitrate}k`,
-    "-maxrate", `${Math.round(config.videoBitrate * 1.2)}k`,
+    "-maxrate", `${Math.round(config.videoBitrate * 1.5)}k`,
     "-bufsize", `${bufferSize}k`,
     "-bf", "0",
     "-refs", "1",
-    "-tune", "zerolatency", // Optimize for low latency live streaming
     
     // Audio encoding
     "-c:a", "aac",
@@ -118,14 +119,13 @@ function startInfiniteLoopFFmpeg(
     "-b:a", `${config.audioBitrate}k`,
     "-ac", "2",
     
-    // HLS output with optimized flags for live streaming
+    // HLS output - generate segments as fast as possible with large buffer
     "-f", "hls",
     "-hls_time", config.segmentDuration.toString(),
     "-hls_list_size", playlistSize.toString(),
     "-hls_delete_threshold", deleteThreshold.toString(),
-    "-hls_flags", "delete_segments+omit_endlist+independent_segments+discont_start+program_date_time",
+    "-hls_flags", "delete_segments+omit_endlist+independent_segments+split_by_time",
     "-hls_segment_type", "mpegts",
-    "-hls_allow_cache", "0",
     "-hls_segment_filename", path.join(channelDir, "segment_%d.ts"),
     playlistPath,
   ];
@@ -200,9 +200,9 @@ export async function startStream(channel: Channel): Promise<boolean> {
     });
     
     const playlistPath = path.join(channelDir, "playlist.m3u8");
-    const minSegments = 10;
+    const minSegments = 20; // More segments for better buffer
     let attempts = 0;
-    const maxAttempts = 60;
+    const maxAttempts = 120; // More time to build buffer
     
     console.log(`[Stream ${channel.id}] Waiting for ${minSegments} segments (~${minSegments * channel.streamingConfig.segmentDuration}s buffer) before ready...`);
     
