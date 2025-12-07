@@ -536,6 +536,85 @@ export async function registerRoutes(
     }
   });
 
+  // ============ MAINTENANCE & OPTIMIZATION ============
+  
+  // Get maintenance info (orphaned resources, reclaimable space)
+  app.get("/api/maintenance", async (_req, res) => {
+    try {
+      const info = await storage.getMaintenanceInfo();
+      res.json(info);
+    } catch (error) {
+      console.error("Error getting maintenance info:", error);
+      res.status(500).json({ error: "Failed to get maintenance info" });
+    }
+  });
+
+  // Cleanup orphaned disk assets
+  app.post("/api/maintenance/cleanup-disk-assets", async (_req, res) => {
+    try {
+      const result = await storage.cleanupOrphanedDiskAssets();
+      res.json(result);
+    } catch (error) {
+      console.error("Error cleaning up disk assets:", error);
+      res.status(500).json({ error: "Failed to cleanup disk assets" });
+    }
+  });
+
+  // Cleanup orphaned DB assets
+  app.post("/api/maintenance/cleanup-db-assets", async (_req, res) => {
+    try {
+      const result = await storage.cleanupOrphanedDbAssets();
+      res.json(result);
+    } catch (error) {
+      console.error("Error cleaning up DB assets:", error);
+      res.status(500).json({ error: "Failed to cleanup DB assets" });
+    }
+  });
+
+  // Cleanup stale streams
+  app.post("/api/maintenance/cleanup-streams", async (_req, res) => {
+    try {
+      const result = await storage.cleanupStaleStreams();
+      res.json(result);
+    } catch (error) {
+      console.error("Error cleaning up streams:", error);
+      res.status(500).json({ error: "Failed to cleanup streams" });
+    }
+  });
+
+  // Cleanup error assets
+  app.post("/api/maintenance/cleanup-error-assets", async (_req, res) => {
+    try {
+      const result = await storage.cleanupErrorAssets();
+      res.json(result);
+    } catch (error) {
+      console.error("Error cleaning up error assets:", error);
+      res.status(500).json({ error: "Failed to cleanup error assets" });
+    }
+  });
+
+  // Cleanup all (full optimization)
+  app.post("/api/maintenance/cleanup-all", async (_req, res) => {
+    try {
+      const result = await storage.cleanupAll();
+      res.json(result);
+    } catch (error) {
+      console.error("Error during full cleanup:", error);
+      res.status(500).json({ error: "Failed to perform full cleanup" });
+    }
+  });
+
+  // Force garbage collection
+  app.post("/api/maintenance/gc", async (_req, res) => {
+    try {
+      const result = await storage.forceGarbageCollection();
+      res.json(result);
+    } catch (error) {
+      console.error("Error forcing GC:", error);
+      res.status(500).json({ error: "Failed to force garbage collection" });
+    }
+  });
+
   // Serve HLS streams with optimized caching for live streaming
   app.use("/streams", (req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");

@@ -1,10 +1,19 @@
-import type { Channel, Video, InsertChannel, InsertVideo, ChannelStats, StreamingConfig, InsertStreamingConfig, PreparedAsset, InsertPreparedAsset, SystemMetrics } from "@shared/schema";
+import type { Channel, Video, InsertChannel, InsertVideo, ChannelStats, StreamingConfig, InsertStreamingConfig, PreparedAsset, InsertPreparedAsset, SystemMetrics, MaintenanceInfo, OrphanedResource, CleanupResult } from "@shared/schema";
 import { channels, videos, preparedAssets } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, asc, count, sql, sum } from "drizzle-orm";
+import { eq, desc, asc, count, sql, sum, isNull, notInArray } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import * as os from "os";
+import * as fs from "fs/promises";
+import * as fsSync from "fs";
+import * as path from "path";
 import { execSync } from "child_process";
+
+const PREPARED_ASSETS_DIR = process.env.NODE_ENV === "production"
+  ? "/app/prepared_assets"
+  : path.join(process.cwd(), "prepared_assets");
+
+const STREAMS_DIR = path.join(process.cwd(), "streams");
 
 export interface IStorage {
   // Channels
@@ -32,6 +41,15 @@ export interface IStorage {
   // Stats & Metrics
   getStats(): Promise<ChannelStats>;
   getSystemMetrics(): Promise<SystemMetrics>;
+  
+  // Maintenance
+  getMaintenanceInfo(): Promise<MaintenanceInfo>;
+  cleanupOrphanedDiskAssets(): Promise<CleanupResult>;
+  cleanupOrphanedDbAssets(): Promise<CleanupResult>;
+  cleanupStaleStreams(): Promise<CleanupResult>;
+  cleanupErrorAssets(): Promise<CleanupResult>;
+  cleanupAll(): Promise<CleanupResult>;
+  forceGarbageCollection(): Promise<{ success: boolean; memoryBefore: number; memoryAfter: number }>;
 }
 
 // Default streaming config - HYPER OPTIMIZED for zero stuttering, low CPU
@@ -438,6 +456,376 @@ export class DatabaseStorage implements IStorage {
         usagePercent: diskTotal > 0 ? Math.round((diskUsed / diskTotal) * 10000) / 100 : 0,
       },
       uptime: os.uptime(),
+    };
+  }
+
+  private async getDirSizeAsync(dirPath: string): Promise<number> {
+    try {
+      await fs.access(dirPath);
+    } catch {
+      return 0;
+    }
+    
+    let totalSize = 0;
+    try {
+      const files = await fs.readdir(dirPath);
+      for (const file of files) {
+        const filePath = path.join(dirPath, file);
+        const stat = await fs.stat(filePath);
+        if (stat.isDirectory()) {
+          totalSize += await this.getDirSizeAsync(filePath);
+        } else {
+          totalSize += stat.size;
+        }
+      }
+    } catch (e) {
+      // Ignore errors
+    }
+    return totalSize;
+  }
+
+  private async pathExists(p: string): Promise<boolean> {
+    try {
+      await fs.access(p);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async getMaintenanceInfo(): Promise<MaintenanceInfo> {
+    const orphanedResources: OrphanedResource[] = [];
+    
+    // Get all asset IDs from database
+    const dbAssets = await db.select({ id: preparedAssets.id, status: preparedAssets.status }).from(preparedAssets);
+    const dbAssetIds = new Set(dbAssets.map(a => a.id));
+    
+    // Get assets referenced by videos (cannot be deleted)
+    const referencedAssets = await db.select({ preparedAssetId: videos.preparedAssetId })
+      .from(videos)
+      .where(sql`${videos.preparedAssetId} IS NOT NULL`);
+    const referencedAssetIds = new Set(referencedAssets.map(v => v.preparedAssetId).filter(Boolean));
+    
+    // Check for orphaned disk assets (on disk but not in DB)
+    if (await this.pathExists(PREPARED_ASSETS_DIR)) {
+      const diskDirs = await fs.readdir(PREPARED_ASSETS_DIR);
+      for (const dir of diskDirs) {
+        if (!dbAssetIds.has(dir)) {
+          const dirPath = path.join(PREPARED_ASSETS_DIR, dir);
+          const size = await this.getDirSizeAsync(dirPath);
+          orphanedResources.push({
+            type: "orphaned_disk_asset",
+            id: dir,
+            path: dirPath,
+            size,
+            reason: "Asset en disco sin registro en base de datos",
+          });
+        }
+      }
+    }
+    
+    // Check for orphaned DB assets (in DB but no files on disk, and not referenced by videos)
+    for (const asset of dbAssets) {
+      if (asset.status === "ready" && !referencedAssetIds.has(asset.id)) {
+        const assetPath = path.join(PREPARED_ASSETS_DIR, asset.id);
+        if (!(await this.pathExists(assetPath))) {
+          orphanedResources.push({
+            type: "orphaned_db_asset",
+            id: asset.id,
+            size: 0,
+            reason: "Registro en DB pero archivos no existen en disco",
+          });
+        }
+      }
+    }
+    
+    // Check for error assets (only those not referenced by videos)
+    const errorAssets = dbAssets.filter(a => a.status === "error" && !referencedAssetIds.has(a.id));
+    for (const asset of errorAssets) {
+      const assetPath = path.join(PREPARED_ASSETS_DIR, asset.id);
+      const exists = await this.pathExists(assetPath);
+      const size = exists ? await this.getDirSizeAsync(assetPath) : 0;
+      orphanedResources.push({
+        type: "error_asset",
+        id: asset.id,
+        path: assetPath,
+        size,
+        reason: "Asset con error de procesamiento",
+      });
+    }
+    
+    // Check for stale streams (stream dirs for channels not currently live)
+    if (await this.pathExists(STREAMS_DIR)) {
+      const streamDirs = await fs.readdir(STREAMS_DIR);
+      const liveChannels = await db.select({ id: channels.id }).from(channels).where(eq(channels.status, "live"));
+      const liveChannelIds = new Set(liveChannels.map(c => c.id));
+      
+      for (const dir of streamDirs) {
+        if (!liveChannelIds.has(dir)) {
+          const dirPath = path.join(STREAMS_DIR, dir);
+          const size = await this.getDirSizeAsync(dirPath);
+          if (size > 0) {
+            orphanedResources.push({
+              type: "stale_stream",
+              id: dir,
+              path: dirPath,
+              size,
+              reason: "Segmentos de stream de canal inactivo",
+            });
+          }
+        }
+      }
+    }
+    
+    const totalReclaimableSize = orphanedResources.reduce((sum, r) => sum + r.size, 0);
+    
+    return {
+      orphanedResources,
+      totalReclaimableSize,
+      errorAssetCount: orphanedResources.filter(r => r.type === "error_asset").length,
+      staleStreamCount: orphanedResources.filter(r => r.type === "stale_stream").length,
+      orphanedDiskAssetCount: orphanedResources.filter(r => r.type === "orphaned_disk_asset").length,
+      orphanedDbAssetCount: orphanedResources.filter(r => r.type === "orphaned_db_asset").length,
+    };
+  }
+
+  async cleanupOrphanedDiskAssets(): Promise<CleanupResult> {
+    const errors: string[] = [];
+    let deletedCount = 0;
+    let reclaimedBytes = 0;
+    
+    if (!(await this.pathExists(PREPARED_ASSETS_DIR))) {
+      return { success: true, deletedCount: 0, reclaimedBytes: 0, errors: [] };
+    }
+    
+    // Also check if asset is currently being processed
+    const { isProcessing: isAssetProcessing } = await import("./asset-processor");
+    
+    const dbAssets = await db.select({ id: preparedAssets.id }).from(preparedAssets);
+    const dbAssetIds = new Set(dbAssets.map(a => a.id));
+    
+    const diskDirs = await fs.readdir(PREPARED_ASSETS_DIR);
+    
+    // Process concurrently with Promise.allSettled for better performance
+    const cleanupPromises = diskDirs
+      .filter(dir => !dbAssetIds.has(dir) && !isAssetProcessing(dir))
+      .map(async (dir) => {
+        const dirPath = path.join(PREPARED_ASSETS_DIR, dir);
+        try {
+          const size = await this.getDirSizeAsync(dirPath);
+          await fs.rm(dirPath, { recursive: true, force: true });
+          return { deleted: true, size, error: null };
+        } catch (e: any) {
+          return { deleted: false, size: 0, error: `Error eliminando ${dir}: ${e.message}` };
+        }
+      });
+    
+    const results = await Promise.allSettled(cleanupPromises);
+    
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        if (result.value.deleted) {
+          deletedCount++;
+          reclaimedBytes += result.value.size;
+        }
+        if (result.value.error) {
+          errors.push(result.value.error);
+        }
+      }
+    }
+    
+    return { success: errors.length === 0, deletedCount, reclaimedBytes, errors };
+  }
+
+  async cleanupOrphanedDbAssets(): Promise<CleanupResult> {
+    const errors: string[] = [];
+    let deletedCount = 0;
+    
+    // Get assets referenced by videos (cannot be deleted)
+    const referencedAssets = await db.select({ preparedAssetId: videos.preparedAssetId })
+      .from(videos)
+      .where(sql`${videos.preparedAssetId} IS NOT NULL`);
+    const referencedAssetIds = new Set(referencedAssets.map(v => v.preparedAssetId).filter(Boolean));
+    
+    const dbAssets = await db.select({ id: preparedAssets.id, status: preparedAssets.status }).from(preparedAssets);
+    
+    for (const asset of dbAssets) {
+      // Only delete if ready, files missing, and not referenced by any video
+      if (asset.status === "ready" && !referencedAssetIds.has(asset.id)) {
+        const assetPath = path.join(PREPARED_ASSETS_DIR, asset.id);
+        if (!(await this.pathExists(assetPath))) {
+          try {
+            await db.delete(preparedAssets).where(eq(preparedAssets.id, asset.id));
+            deletedCount++;
+          } catch (e: any) {
+            errors.push(`Error eliminando registro ${asset.id}: ${e.message}`);
+          }
+        }
+      }
+    }
+    
+    return { success: errors.length === 0, deletedCount, reclaimedBytes: 0, errors };
+  }
+
+  private async getNewestFileTime(dirPath: string): Promise<number> {
+    try {
+      const files = await fs.readdir(dirPath);
+      let newestTime = 0;
+      
+      for (const file of files) {
+        const filePath = path.join(dirPath, file);
+        try {
+          const stat = await fs.stat(filePath);
+          if (stat.mtimeMs > newestTime) {
+            newestTime = stat.mtimeMs;
+          }
+        } catch {
+          // Ignore individual file errors
+        }
+      }
+      
+      return newestTime;
+    } catch {
+      return 0;
+    }
+  }
+
+  async cleanupStaleStreams(): Promise<CleanupResult> {
+    const errors: string[] = [];
+    let deletedCount = 0;
+    let reclaimedBytes = 0;
+    
+    if (!(await this.pathExists(STREAMS_DIR))) {
+      return { success: true, deletedCount: 0, reclaimedBytes: 0, errors: [] };
+    }
+    
+    // Import isStreamActive to check if FFmpeg is actually running
+    const { isStreamActive } = await import("./streaming");
+    
+    // Only cleanup streams for channels that are NOT live (double-check DB status AND process status)
+    const liveChannels = await db.select({ id: channels.id }).from(channels).where(eq(channels.status, "live"));
+    const liveChannelIds = new Set(liveChannels.map(c => c.id));
+    
+    const streamDirs = await fs.readdir(STREAMS_DIR);
+    const GRACE_PERIOD_MS = 120000; // 2 minute grace period (increased for safety)
+    
+    const cleanupPromises = streamDirs.map(async (dir) => {
+      // Skip if channel is marked as live in DB
+      if (liveChannelIds.has(dir)) {
+        return { deleted: false, size: 0, error: null };
+      }
+      
+      // Skip if stream process is actually running (double-check)
+      if (isStreamActive(dir)) {
+        return { deleted: false, size: 0, error: null };
+      }
+      
+      const dirPath = path.join(STREAMS_DIR, dir);
+      
+      try {
+        // Check the newest segment/playlist file time, not just directory mtime
+        const newestFileTime = await this.getNewestFileTime(dirPath);
+        const timeSinceNewestFile = Date.now() - newestFileTime;
+        
+        if (newestFileTime > 0 && timeSinceNewestFile < GRACE_PERIOD_MS) {
+          // Files were modified recently, skip to avoid race condition
+          return { deleted: false, size: 0, error: null };
+        }
+        
+        const size = await this.getDirSizeAsync(dirPath);
+        await fs.rm(dirPath, { recursive: true, force: true });
+        return { deleted: true, size, error: null };
+      } catch (e: any) {
+        return { deleted: false, size: 0, error: `Error eliminando stream ${dir}: ${e.message}` };
+      }
+    });
+    
+    const results = await Promise.allSettled(cleanupPromises);
+    
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        if (result.value.deleted) {
+          deletedCount++;
+          reclaimedBytes += result.value.size;
+        }
+        if (result.value.error) {
+          errors.push(result.value.error);
+        }
+      }
+    }
+    
+    return { success: errors.length === 0, deletedCount, reclaimedBytes, errors };
+  }
+
+  async cleanupErrorAssets(): Promise<CleanupResult> {
+    const errors: string[] = [];
+    let deletedCount = 0;
+    let reclaimedBytes = 0;
+    
+    // Get assets referenced by videos (cannot be deleted even if error status)
+    const referencedAssets = await db.select({ preparedAssetId: videos.preparedAssetId })
+      .from(videos)
+      .where(sql`${videos.preparedAssetId} IS NOT NULL`);
+    const referencedAssetIds = new Set(referencedAssets.map(v => v.preparedAssetId).filter(Boolean));
+    
+    const errorAssets = await db.select({ id: preparedAssets.id }).from(preparedAssets).where(eq(preparedAssets.status, "error"));
+    
+    for (const asset of errorAssets) {
+      // Skip if referenced by a video
+      if (referencedAssetIds.has(asset.id)) {
+        continue;
+      }
+      
+      try {
+        const assetPath = path.join(PREPARED_ASSETS_DIR, asset.id);
+        if (await this.pathExists(assetPath)) {
+          const size = await this.getDirSizeAsync(assetPath);
+          await fs.rm(assetPath, { recursive: true, force: true });
+          reclaimedBytes += size;
+        }
+        await db.delete(preparedAssets).where(eq(preparedAssets.id, asset.id));
+        deletedCount++;
+      } catch (e: any) {
+        errors.push(`Error eliminando asset con error ${asset.id}: ${e.message}`);
+      }
+    }
+    
+    return { success: errors.length === 0, deletedCount, reclaimedBytes, errors };
+  }
+
+  async cleanupAll(): Promise<CleanupResult> {
+    const results: CleanupResult[] = [];
+    
+    results.push(await this.cleanupOrphanedDiskAssets());
+    results.push(await this.cleanupOrphanedDbAssets());
+    results.push(await this.cleanupStaleStreams());
+    results.push(await this.cleanupErrorAssets());
+    
+    return {
+      success: results.every(r => r.success),
+      deletedCount: results.reduce((sum, r) => sum + r.deletedCount, 0),
+      reclaimedBytes: results.reduce((sum, r) => sum + r.reclaimedBytes, 0),
+      errors: results.flatMap(r => r.errors),
+    };
+  }
+
+  async forceGarbageCollection(): Promise<{ success: boolean; memoryBefore: number; memoryAfter: number }> {
+    const memoryBefore = process.memoryUsage().heapUsed;
+    
+    try {
+      if (global.gc) {
+        global.gc();
+      }
+    } catch (e) {
+      // GC not exposed
+    }
+    
+    const memoryAfter = process.memoryUsage().heapUsed;
+    
+    return {
+      success: true,
+      memoryBefore,
+      memoryAfter,
     };
   }
 }

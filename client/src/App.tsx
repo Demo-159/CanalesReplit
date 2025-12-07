@@ -12,6 +12,7 @@ import Dashboard from "@/pages/dashboard";
 import ChannelDetail from "@/pages/channel-detail";
 import AssetsPage from "@/pages/assets";
 import MetricsPage from "@/pages/metrics";
+import OptimizationPage from "@/pages/optimization";
 import Settings from "@/pages/settings";
 import NotFound from "@/pages/not-found";
 
@@ -23,6 +24,7 @@ function Router() {
       <Route path="/channels/:id" component={ChannelDetail} />
       <Route path="/assets" component={AssetsPage} />
       <Route path="/metrics" component={MetricsPage} />
+      <Route path="/optimization" component={OptimizationPage} />
       <Route path="/settings" component={Settings} />
       <Route component={NotFound} />
     </Switch>

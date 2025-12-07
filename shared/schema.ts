@@ -180,3 +180,28 @@ export const insertPreparedAssetSchema = z.object({
 });
 
 export type InsertPreparedAsset = z.infer<typeof insertPreparedAssetSchema>;
+
+// Maintenance & Optimization Types
+export interface OrphanedResource {
+  type: "orphaned_disk_asset" | "orphaned_db_asset" | "stale_stream" | "error_asset";
+  id: string;
+  path?: string;
+  size: number;
+  reason: string;
+}
+
+export interface MaintenanceInfo {
+  orphanedResources: OrphanedResource[];
+  totalReclaimableSize: number;
+  errorAssetCount: number;
+  staleStreamCount: number;
+  orphanedDiskAssetCount: number;
+  orphanedDbAssetCount: number;
+}
+
+export interface CleanupResult {
+  success: boolean;
+  deletedCount: number;
+  reclaimedBytes: number;
+  errors: string[];
+}

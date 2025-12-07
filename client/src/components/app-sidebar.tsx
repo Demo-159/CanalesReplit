@@ -1,4 +1,4 @@
-import { Radio, Settings, LayoutDashboard, Film, Activity } from "lucide-react";
+import { Radio, Settings, LayoutDashboard, Film, Activity, Zap } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   Sidebar,
@@ -35,7 +35,12 @@ const menuItems = [
     icon: Activity,
   },
   {
-    title: "Configuración",
+    title: "Optimizacion",
+    url: "/optimization",
+    icon: Zap,
+  },
+  {
+    title: "Configuracion",
     url: "/settings",
     icon: Settings,
   },
