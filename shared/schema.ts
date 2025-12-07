@@ -88,13 +88,13 @@ export const insertChannelSchema = z.object({
 });
 
 export const streamingConfigSchema = z.object({
-  videoBitrate: z.number().min(200).max(8000).default(1500),
-  audioBitrate: z.number().min(32).max(320).default(128),
-  preset: z.enum(["ultrafast", "superfast", "veryfast", "faster", "fast"]).default("veryfast"),
-  segmentDuration: z.number().min(1).max(10).default(6),
-  playlistSize: z.number().min(3).max(30).default(15),
-  transitionDelay: z.number().min(100).max(5000).default(200),
-  threads: z.number().min(1).max(8).default(4),
+  videoBitrate: z.number().min(200).max(8000).default(1200),
+  audioBitrate: z.number().min(32).max(320).default(96),
+  preset: z.enum(["ultrafast", "superfast", "veryfast", "faster", "fast"]).default("ultrafast"),
+  segmentDuration: z.number().min(4).max(10).default(6),
+  playlistSize: z.number().min(30).max(120).default(60),
+  transitionDelay: z.number().min(0).max(5000).default(100),
+  threads: z.number().min(1).max(8).default(2),
 });
 
 export type InsertStreamingConfig = z.infer<typeof streamingConfigSchema>;

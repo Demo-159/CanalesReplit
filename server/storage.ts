@@ -23,14 +23,14 @@ export interface IStorage {
   getStats(): Promise<ChannelStats>;
 }
 
-// Default streaming config
+// Default streaming config - HYPER OPTIMIZED for zero stuttering, low CPU
 const defaultStreamingConfig: StreamingConfig = {
-  videoBitrate: 1000,
-  audioBitrate: 128,
-  preset: "veryfast",
-  segmentDuration: 4,
-  playlistSize: 6,
-  transitionDelay: 500,
+  videoBitrate: 1200,
+  audioBitrate: 96,
+  preset: "ultrafast",
+  segmentDuration: 6,
+  playlistSize: 60,
+  transitionDelay: 100,
   threads: 2,
 };
 

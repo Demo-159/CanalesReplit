@@ -94,28 +94,34 @@ function startFFmpegProcess(
   // Calculate GOP size based on segment duration (assuming 30fps)
   const gopSize = config.segmentDuration * 30;
   
-  // Use larger playlist size for better buffering (minimum 15 segments)
-  const playlistSize = Math.max(config.playlistSize, 15);
+  // HYPER MEGA PRELOAD: Use massive playlist size for maximum buffering (minimum 50 segments)
+  const playlistSize = Math.max(config.playlistSize, 50);
   
-  // Larger buffer for smoother playback (4x bitrate for better buffering)
-  const bufferSize = config.videoBitrate * 4;
+  // LARGE BUFFER: 8x bitrate for smooth playback with deep preload
+  const bufferSize = config.videoBitrate * 8;
   
-  // FFmpeg arguments optimized for smooth streaming with large preload
+  // FFmpeg arguments optimized for DEEP BUFFERING and smooth playback
   const ffmpegArgs = [
     "-hide_banner",
     "-loglevel", "error",
-    // Input options for network streams
+    
+    // INPUT PRELOADING - Large analysis for stable stream detection
     "-reconnect", "1",
     "-reconnect_streamed", "1", 
-    "-reconnect_delay_max", "5",
-    "-analyzeduration", "10000000",
-    "-probesize", "10000000",
-    "-fflags", "+genpts+discardcorrupt",
-    "-threads", Math.max(config.threads, 4).toString(),
+    "-reconnect_delay_max", "10",
+    "-reconnect_at_eof", "1",
+    "-analyzeduration", "30000000",
+    "-probesize", "30000000",
+    "-fflags", "+genpts+discardcorrupt+igndts",
+    
+    // Thread configuration from user settings
+    "-threads", config.threads.toString(),
     "-thread_queue_size", "8192",
+    
     // Input
     "-i", videoUrl,
-    // Video encoding - optimized for streaming
+    
+    // VIDEO ENCODING - Use user-configured preset for CPU control
     "-c:v", "libx264",
     "-preset", config.preset,
     "-profile:v", "main",
@@ -125,20 +131,22 @@ function startFFmpegProcess(
     "-keyint_min", gopSize.toString(),
     "-sc_threshold", "0",
     "-b:v", `${config.videoBitrate}k`,
-    "-maxrate", `${Math.round(config.videoBitrate * 1.5)}k`,
+    "-maxrate", `${Math.round(config.videoBitrate * 1.2)}k`,
     "-bufsize", `${bufferSize}k`,
     "-bf", "2",
-    "-refs", "3",
-    // Audio encoding
+    "-refs", "2",
+    
+    // AUDIO - Standard quality encoding
     "-c:a", "aac",
     "-ar", "44100",
     "-b:a", `${config.audioBitrate}k`,
     "-ac", "2",
-    // HLS output with large playlist for buffering
+    
+    // HLS OUTPUT - MASSIVE PLAYLIST for zero stuttering
     "-f", "hls",
     "-hls_time", config.segmentDuration.toString(),
     "-hls_list_size", playlistSize.toString(),
-    "-hls_delete_threshold", "3",
+    "-hls_delete_threshold", "5",
     "-hls_init_time", "0",
     "-start_number", startNumber.toString(),
     "-hls_flags", startNumber > 0 
@@ -148,7 +156,7 @@ function startFFmpegProcess(
     playlistPath,
   ];
 
-  console.log(`[Stream ${channelId}] Starting FFmpeg with playlist size ${playlistSize}, buffer ${bufferSize}k`);
+  console.log(`[Stream ${channelId}] HYPER PRELOAD: playlist=${playlistSize} segments, buffer=${bufferSize}k, preset=${config.preset}, threads=${config.threads}`);
 
   return spawn("ffmpeg", ffmpegArgs, {
     stdio: ["ignore", "pipe", "pipe"],

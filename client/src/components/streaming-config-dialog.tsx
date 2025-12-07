@@ -19,9 +19,9 @@ interface StreamingConfigDialogProps {
 }
 
 const presetDescriptions: Record<string, string> = {
-  ultrafast: "Mínimo uso de CPU, menor calidad",
-  superfast: "Muy bajo uso de CPU",
-  veryfast: "Bajo uso de CPU (recomendado)",
+  ultrafast: "Mínimo uso de CPU, ideal para estabilidad (recomendado)",
+  superfast: "Muy bajo uso de CPU, buena estabilidad",
+  veryfast: "Bajo uso de CPU",
   faster: "Uso moderado de CPU",
   fast: "Mayor uso de CPU, mejor calidad",
 };
@@ -150,7 +150,7 @@ export function StreamingConfigDialog({ open, onOpenChange, channelId, currentCo
                   <FormLabel>Duración de Segmentos: {field.value}s</FormLabel>
                   <FormControl>
                     <Slider
-                      min={2}
+                      min={4}
                       max={10}
                       step={1}
                       value={[field.value]}
@@ -159,7 +159,7 @@ export function StreamingConfigDialog({ open, onOpenChange, channelId, currentCo
                     />
                   </FormControl>
                   <FormDescription>
-                    Segmentos más largos = mejor estabilidad, más latencia
+                    6-10s = máxima estabilidad y precarga continua
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -171,19 +171,19 @@ export function StreamingConfigDialog({ open, onOpenChange, channelId, currentCo
               name="playlistSize"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Tamaño de Playlist: {field.value} segmentos</FormLabel>
+                  <FormLabel>Tamaño de Playlist: {field.value} segmentos (~{Math.round(field.value * 6 / 60)} min buffer)</FormLabel>
                   <FormControl>
                     <Slider
-                      min={3}
-                      max={15}
-                      step={1}
+                      min={30}
+                      max={120}
+                      step={10}
                       value={[field.value]}
                       onValueChange={([value]) => field.onChange(value)}
                       data-testid="slider-playlist-size"
                     />
                   </FormControl>
                   <FormDescription>
-                    Más segmentos = mayor buffer, menos cortes
+                    Mega buffer: más segmentos = reproducción sin cortes
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -198,16 +198,16 @@ export function StreamingConfigDialog({ open, onOpenChange, channelId, currentCo
                   <FormLabel>Delay de Transición: {field.value}ms</FormLabel>
                   <FormControl>
                     <Slider
-                      min={100}
+                      min={0}
                       max={2000}
-                      step={100}
+                      step={50}
                       value={[field.value]}
                       onValueChange={([value]) => field.onChange(value)}
                       data-testid="slider-transition-delay"
                     />
                   </FormControl>
                   <FormDescription>
-                    Tiempo entre videos para evitar cortes abruptos
+                    0-100ms = transiciones fluidas sin pausas
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -223,7 +223,7 @@ export function StreamingConfigDialog({ open, onOpenChange, channelId, currentCo
                   <FormControl>
                     <Slider
                       min={1}
-                      max={4}
+                      max={8}
                       step={1}
                       value={[field.value]}
                       onValueChange={([value]) => field.onChange(value)}
@@ -231,7 +231,7 @@ export function StreamingConfigDialog({ open, onOpenChange, channelId, currentCo
                     />
                   </FormControl>
                   <FormDescription>
-                    Más hilos = más rápido pero más uso de CPU
+                    1-2 = bajo CPU, 4-8 = mayor rendimiento
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
