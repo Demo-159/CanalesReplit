@@ -146,12 +146,12 @@ function startFFmpegProcess(
     "-f", "hls",
     "-hls_time", config.segmentDuration.toString(),
     "-hls_list_size", playlistSize.toString(),
-    "-hls_delete_threshold", "5",
+    "-hls_delete_threshold", "20",
     "-hls_init_time", "0",
     "-start_number", startNumber.toString(),
     "-hls_flags", startNumber > 0 
-      ? "append_list+delete_segments+omit_endlist+independent_segments+temp_file" 
-      : "delete_segments+omit_endlist+independent_segments+temp_file",
+      ? "append_list+delete_segments+omit_endlist+independent_segments" 
+      : "delete_segments+omit_endlist+independent_segments",
     "-hls_segment_filename", path.join(channelDir, "segment_%d.ts"),
     playlistPath,
   ];

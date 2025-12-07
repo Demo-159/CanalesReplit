@@ -388,23 +388,31 @@ export async function registerRoutes(
     }
   });
 
-  // Serve HLS streams
+  // Serve HLS streams with optimized caching for live streaming
   app.use("/streams", (req, res, next) => {
     // Set proper CORS and content type headers for HLS
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Range");
+    res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range");
     
     if (req.path.endsWith(".m3u8")) {
+      // Playlist should never be cached for live streaming
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
     } else if (req.path.endsWith(".ts")) {
+      // Segments can be cached for a short time since they don't change
       res.setHeader("Content-Type", "video/MP2T");
+      res.setHeader("Cache-Control", "public, max-age=300");
     }
     
     next();
   }, express.static(path.join(process.cwd(), "streams"), {
     maxAge: 0,
     etag: false,
+    lastModified: false,
   }));
 
   return httpServer;
