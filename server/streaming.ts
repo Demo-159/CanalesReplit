@@ -75,20 +75,28 @@ function startInfiniteLoopFFmpeg(
   const gopSize = config.segmentDuration * 30;
   const playlistSize = Math.max(config.playlistSize, 60);
   const deleteThreshold = Math.max(playlistSize + 30, 90);
-  const bufferSize = config.videoBitrate * 10;
+  const bufferSize = config.videoBitrate * 8;
   
   const ffmpegArgs = [
     "-hide_banner",
     "-loglevel", "warning",
     
+    // Input options for infinite loop with proper timestamp handling
+    "-re", // Read input at native frame rate for live streaming
+    "-fflags", "+genpts+igndts", // Generate PTS and ignore DTS to fix timestamp issues
     "-stream_loop", "-1",
     "-reconnect", "1",
     "-reconnect_streamed", "1",
     "-reconnect_delay_max", "5",
     "-i", videoUrl,
     
+    // Fix timestamp discontinuities from looping
+    "-avoid_negative_ts", "make_zero",
+    "-start_at_zero",
+    
     "-threads", config.threads.toString(),
     
+    // Video encoding with optimized settings for live streaming
     "-c:v", "libx264",
     "-preset", config.preset,
     "-profile:v", "main",
@@ -98,22 +106,26 @@ function startInfiniteLoopFFmpeg(
     "-keyint_min", gopSize.toString(),
     "-sc_threshold", "0",
     "-b:v", `${config.videoBitrate}k`,
-    "-maxrate", `${Math.round(config.videoBitrate * 1.5)}k`,
+    "-maxrate", `${Math.round(config.videoBitrate * 1.2)}k`,
     "-bufsize", `${bufferSize}k`,
     "-bf", "0",
     "-refs", "1",
+    "-tune", "zerolatency", // Optimize for low latency live streaming
     
+    // Audio encoding
     "-c:a", "aac",
     "-ar", "44100",
     "-b:a", `${config.audioBitrate}k`,
     "-ac", "2",
     
+    // HLS output with optimized flags for live streaming
     "-f", "hls",
     "-hls_time", config.segmentDuration.toString(),
     "-hls_list_size", playlistSize.toString(),
     "-hls_delete_threshold", deleteThreshold.toString(),
-    "-hls_flags", "delete_segments+omit_endlist+independent_segments",
+    "-hls_flags", "delete_segments+omit_endlist+independent_segments+discont_start+program_date_time",
     "-hls_segment_type", "mpegts",
+    "-hls_allow_cache", "0",
     "-hls_segment_filename", path.join(channelDir, "segment_%d.ts"),
     playlistPath,
   ];
