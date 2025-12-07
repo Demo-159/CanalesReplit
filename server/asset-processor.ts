@@ -8,6 +8,75 @@ const ASSETS_DIR = process.env.NODE_ENV === "production"
   ? "/app/prepared_assets" 
   : path.join(process.cwd(), "prepared_assets");
 
+const ALLOWED_URL_PROTOCOLS = ["http:", "https:"];
+const ALLOWED_EXTENSIONS = [".mp4", ".mkv", ".avi", ".mov", ".webm", ".m3u8", ".ts"];
+
+const BLOCKED_HOSTNAMES = [
+  "localhost",
+  "127.0.0.1",
+  "0.0.0.0",
+  "::1",
+  "[::1]",
+];
+
+const BLOCKED_IP_PATTERNS = [
+  /^127\./,
+  /^10\./,
+  /^192\.168\./,
+  /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
+  /^100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\./,
+  /^169\.254\./,
+  /^0\./,
+  /^fc00:/i,
+  /^fd[0-9a-f]{2}:/i,
+  /^fe80:/i,
+  /^::ffff:/i,
+];
+
+const BLOCKED_HOSTNAME_PATTERNS = [
+  /\.local$/i,
+  /\.internal$/i,
+  /\.localhost$/i,
+  /\.localdomain$/i,
+];
+
+function validateVideoUrl(urlString: string): boolean {
+  try {
+    const url = new URL(urlString);
+    
+    if (!ALLOWED_URL_PROTOCOLS.includes(url.protocol)) {
+      return false;
+    }
+    
+    const hostname = url.hostname.toLowerCase();
+    
+    if (BLOCKED_HOSTNAMES.includes(hostname)) {
+      return false;
+    }
+    
+    for (const pattern of BLOCKED_IP_PATTERNS) {
+      if (pattern.test(hostname)) {
+        return false;
+      }
+    }
+    
+    for (const pattern of BLOCKED_HOSTNAME_PATTERNS) {
+      if (pattern.test(hostname)) {
+        return false;
+      }
+    }
+    
+    const ext = path.extname(url.pathname).toLowerCase();
+    if (ext && !ALLOWED_EXTENSIONS.includes(ext)) {
+      return false;
+    }
+    
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 try {
   if (!fs.existsSync(ASSETS_DIR)) {
     fs.mkdirSync(ASSETS_DIR, { recursive: true, mode: 0o755 });
@@ -115,6 +184,14 @@ export async function processAsset(assetId: string): Promise<boolean> {
 
   if (processingJobs.has(assetId)) {
     console.log(`[Asset ${assetId}] Already processing`);
+    return false;
+  }
+
+  if (!validateVideoUrl(asset.sourceUrl)) {
+    console.error(`[Asset ${assetId}] Invalid or disallowed URL: ${asset.sourceUrl}`);
+    await storage.updatePreparedAssetStatus(assetId, "error", {
+      errorMessage: "Invalid or disallowed URL. Only HTTP/HTTPS URLs to video files are allowed.",
+    });
     return false;
   }
 
